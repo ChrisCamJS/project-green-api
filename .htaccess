@@ -1,0 +1,2 @@
+# If you see this, comment it out so index.php can take control!
+# Header set Access-Control-Allow-Origin "*"
