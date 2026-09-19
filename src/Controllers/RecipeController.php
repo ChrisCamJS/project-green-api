@@ -491,6 +491,64 @@ public function getAllRecipes() {
         }
     }
 
+    public function toggleFavorite() {
+        // Enforce a strict JSON response so React doesn't throw a wobbly
+        header('Content-Type: application/json');
+
+        try {
+            // Secure the perimeter and grab the active user's ID
+            $currentUser = $this->requireAuth();
+            $userId = $currentUser['id'];
+
+            // Capture the incoming JSON payload from the fetch request
+            $rawInput = file_get_contents("php://input");
+            $requestData = json_decode($rawInput, true);
+            $recipeId = $requestData['recipe_id'] ?? null;
+            
+            if (!$recipeId) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "message" => "Missing recipe ID. I cannot favorite thin air, darling."]);
+                return;
+            }
+
+            // Utilize the class database connection
+            $db = $this->db;
+
+            // Check if this recipe is already lounging in their vault
+            $checkStmt = $db->prepare("SELECT id FROM recipe_favorites WHERE user_id = ? AND recipe_id = ?");
+            $checkStmt->execute([$userId, $recipeId]);
+            $existingFavorite = $checkStmt->fetch(\PDO::FETCH_ASSOC);
+
+            if ($existingFavorite) {
+                // It exists, so we chuck it out (DELETE)
+                $deleteStmt = $db->prepare("DELETE FROM recipe_favorites WHERE user_id = ? AND recipe_id = ?");
+                $deleteStmt->execute([$userId, $recipeId]);
+                $isFavorite = false;
+                $message = "Recipe binned from your vault.";
+            } else {
+                // It does not exist, so we lock it in (INSERT)
+                $insertStmt = $db->prepare("INSERT INTO recipe_favorites (user_id, recipe_id) VALUES (?, ?)");
+                $insertStmt->execute([$userId, $recipeId]);
+                $isFavorite = true;
+                $message = "Smashing! Recipe vaulted successfully.";
+            }
+
+            http_response_code(200);
+            echo json_encode([
+                "status" => "success", 
+                "message" => $message,
+                "is_favorite" => $isFavorite 
+            ]);
+
+        } catch (\Exception $e) {
+            http_response_code(500);
+            echo json_encode([
+                "status" => "error", 
+                "message" => "Database error: " . $e->getMessage()
+            ]);
+        }
+    }
+
     /**
      * Accepts a star rating, logs it by IP, and recalculates the recipe's average.
      */
