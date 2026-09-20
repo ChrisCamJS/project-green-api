@@ -12,9 +12,14 @@ $router->add('GET', '/recipes/single', 'RecipeController', 'getRecipeById');
 
 // AUTHENTICATION & USERS
 $router->add('POST', '/login', 'AuthController', 'login');
+$router->add('POST', '/register', 'AuthController', 'register');
 $router->add('POST', '/logout', 'AuthController', 'logout');
 $router->add('POST', '/users/deduct-token', 'AuthController', 'deductToken');
-$router->add('GET', '/emergency-reset', 'AuthController', 'emergencyReset');
+$router->add('GET', '/admin/invites', 'AdminController', 'getInviteCodes');
+$router->add('POST', '/admin/invites', 'AdminController', 'generateInviteCode');
+$router->add('PUT', '/admin/invites/toggle', 'AdminController', 'toggleInviteCode');
+$router->add('POST', '/users/request-reset', 'AuthController', 'requestPasswordReset');
+$router->add('POST', '/users/reset-password', 'AuthController', 'resetPassword');
 
 // RECIPE MANAGEMENT
 $router->add('PUT', '/recipes', 'RecipeController', 'updateRecipe');
