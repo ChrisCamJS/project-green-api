@@ -29,17 +29,25 @@ public function getAllRecipes() {
             $currentUserId = $_SESSION['user_id'] ?? null;
             $db = Database::connect();
             
-            // Notice the 'r.' prefix and the LEFT JOIN linking the users table!
+            // Check if the user is an admin (assuming you start the session at the top of the method)
+            $isAdmin = isset($_SESSION['is_admin']) && $_SESSION['is_admin'] == 1;
+
+            // Base query
             $sql = "SELECT r.id, r.title, r.description, r.image_url, r.yields, 
-                           r.prep_time_mins, r.cook_time_mins, r.is_wfpb, r.is_oil_free, 
-                           r.is_public, r.image_source, r.created_at, r.average_rating, r.rating_count,
-                           u.username AS author_name, 
-                           CASE WHEN rf.recipe_id IS NOT NULL THEN 1 ELSE 0 END AS is_favorite
+                        r.prep_time_mins, r.cook_time_mins, r.is_wfpb, r.is_oil_free, 
+                        r.is_public, r.image_source, r.created_at, r.average_rating, r.rating_count,
+                        u.username AS author_name, 
+                        CASE WHEN rf.recipe_id IS NOT NULL THEN 1 ELSE 0 END AS is_favorite
                     FROM recipes r
                     LEFT JOIN users u ON r.user_id = u.id
-                    LEFT JOIN recipe_favorites rf ON rf.recipe_id = r.id AND rf.user_id = :current_user_id
-                    WHERE r.is_public = 1
-                    ORDER BY r.created_at DESC";
+                    LEFT JOIN recipe_favorites rf ON rf.recipe_id = r.id AND rf.user_id = :current_user_id";
+
+            // Only hide non-public recipes if the user IS NOT an admin
+            if (!$isAdmin) {
+                $sql .= " WHERE r.is_public = 1";
+            }
+
+            $sql .= " ORDER BY r.created_at DESC";
                     
             $stmt = $db->prepare($sql);
             $stmt->execute([':current_user_id' => $currentUserId]);
@@ -417,6 +425,42 @@ public function getAllRecipes() {
             'username' => $_SESSION['username'] ?? 'Vault Member'
         ];
     }
+
+    public function toggleDraft() {
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
+
+    if (empty($_SESSION['is_admin'])) {
+        http_response_code(403);
+        echo json_encode(["success" => false, "message" => "Cheeky! Admin access strictly required."]);
+        return;
+    }
+
+    $raw_input = file_get_contents("php://input");
+    $data = json_decode($raw_input, true);
+
+    $recipeId = $data['id'] ?? null;
+    $isPublic = isset($data['is_public']) ? (int)$data['is_public'] : null;
+
+    if (!$recipeId || $isPublic === null) {
+        http_response_code(400);
+        echo json_encode(["success" => false, "message" => "Missing recipe ID or visibility status, mate."]);
+        return;
+    }
+
+    $db = \App\Database::connect();
+    $stmt = $db->prepare("UPDATE recipes SET is_public = :is_public WHERE id = :id");
+    $success = $stmt->execute([':is_public' => $isPublic, ':id' => $recipeId]);
+
+    if ($success) {
+        $statusText = $isPublic ? "published" : "hidden";
+        echo json_encode(["success" => true, "message" => "Recipe successfully {$statusText}."]);
+    } else {
+        http_response_code(500);
+        echo json_encode(["success" => false, "message" => "The database threw a wobbly. Try again."]);
+    }
+}
 
 public function getUserFavorites() {
         $currentUser = $this->requireAuth();
