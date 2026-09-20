@@ -7,13 +7,13 @@ use PDO;
 
 class AuthController {
 
-    public function login() {
+   public function login() {
         // start the session
         if (session_status() === PHP_SESSION_NONE) {
             session_start();
         }
 
-        $db = Database::connect();
+        $db = Database::connect(); // Relying on your trusty PDO connection setup
 
         $raw_input = file_get_contents("php://input");
         $data = json_decode($raw_input, true);
@@ -22,18 +22,20 @@ class AuthController {
             $data = [];
         }
 
-        $username = $data['username'] ?? '';
+        // Swapping out the username check for email here
+        $email = $data['email'] ?? '';
         $password = $data['password'] ?? '';
 
-        if (empty($username) || empty($password)) {
+        if (empty($email) || empty($password)) {
             http_response_code(400);
-            echo json_encode(["message" => "Provide a Username and a Password."]);
+            echo json_encode(["message" => "Don't be cheeky! Provide both an Email and a Password."]);
             return;
         }
 
-        $sql = "SELECT id, username, password_hash, is_admin, account_tier, generation_tokens FROM users WHERE username = :identifier LIMIT 1";
+        // Updated query to check against the email column instead of username
+        $sql = "SELECT id, username, email, password_hash, is_admin, account_tier, generation_tokens FROM users WHERE email = :email LIMIT 1";
         $stmt = $db->prepare($sql);
-        $stmt->execute([':identifier' => $username]);
+        $stmt->execute([':email' => $email]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
         // verify the user exists and the password matches the hash
@@ -41,13 +43,13 @@ class AuthController {
             // strip the hash before sending the data back to the front-end (safety first!)
             unset($user['password_hash']);
 
-            // Save user info in the session
+            // Save user info in the session (keeping username for your recipe cards!)
             $_SESSION['user_id'] = $user['id'];
             $_SESSION['username'] = $user['username'];
+            $_SESSION['email'] = $user['email']; 
             $_SESSION['is_admin'] = $user['is_admin'];
             $_SESSION['account_tier'] = $user['account_tier'];
             $_SESSION['generation_tokens'] = $user['generation_tokens'];
-
 
             // We send the whole $user array back
             echo json_encode([
@@ -59,10 +61,9 @@ class AuthController {
         else {
             // Keep the error vague for security
             http_response_code(401);
-            echo json_encode(["success" => false, "message" => "Invalid credentials."]);
+            echo json_encode(["success" => false, "message" => "Invalid credentials, love."]);
         }
     }
-    
     public function logout() {
         if (session_status() === PHP_SESSION_NONE) {
             session_start();
