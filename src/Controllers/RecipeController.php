@@ -23,19 +23,26 @@ class RecipeController {
      */
 public function getAllRecipes() {
         try {
+            if (session_status() === PHP_SESSION_NONE) {
+                session_start();
+            }
+            $currentUserId = $_SESSION['user_id'] ?? null;
             $db = Database::connect();
             
             // Notice the 'r.' prefix and the LEFT JOIN linking the users table!
             $sql = "SELECT r.id, r.title, r.description, r.image_url, r.yields, 
                            r.prep_time_mins, r.cook_time_mins, r.is_wfpb, r.is_oil_free, 
                            r.is_public, r.image_source, r.created_at, r.average_rating, r.rating_count,
-                           u.username AS author_name
+                           u.username AS author_name, 
+                           CASE WHEN rf.recipe_id IS NOT NULL THEN 1 ELSE 0 END AS is_favorite
                     FROM recipes r
                     LEFT JOIN users u ON r.user_id = u.id
+                    LEFT JOIN recipe_favorites rf ON rf.recipe_id = r.id AND rf.user_id = :current_user_id
                     WHERE r.is_public = 1
-                    ORDER BY r.id DESC";
+                    ORDER BY r.created_at DESC";
                     
-            $stmt = $db->query($sql);
+            $stmt = $db->prepare($sql);
+            $stmt->execute([':current_user_id' => $currentUserId]);
             $recipes = $stmt->fetchAll(\PDO::FETCH_ASSOC);
 
             $formatted = array_map(function($r) {
@@ -55,7 +62,9 @@ public function getAllRecipes() {
                     'imageSource' => $r['image_source'],
                     'createdAt' => $r['created_at'],
                     'averageRating' => (float)($r['average_rating'] ?? 0),
-                    'ratingCount' => (int)($r['rating_count'] ?? 0)
+                    'ratingCount' => (int)($r['rating_count'] ?? 0),
+                    'is_favorite' => (bool)$r['is_favorite'],
+                    'isFavorited' => (bool)$r['is_favorite']
                 ];
             }, $recipes);
 
@@ -409,18 +418,15 @@ public function getAllRecipes() {
         ];
     }
 
-    public function getUserFavorites() {
+public function getUserFavorites() {
         $currentUser = $this->requireAuth();
         $userId = $currentUser['id'];
 
         try {
-            // Use the class db connection
             $db = $this->db;
-
-            // Force PDO to throw exceptions on SQL errors!
             $db->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
 
-            // Notice we REMOVED r.username from the SELECT list here
+            // Fetch only recipes present in recipe_favorites for this user
             $sql = "SELECT r.id, r.user_id, r.title, r.description, r.image_url, r.yields, 
                            r.prep_time_mins, r.cook_time_mins, r.is_wfpb, r.is_oil_free, 
                            r.is_public, r.image_source, r.created_at, r.average_rating, r.rating_count,
@@ -434,10 +440,8 @@ public function getAllRecipes() {
 
             $stmt = $db->prepare($sql);
             $stmt->execute([$userId]);
-            
             $recipes = $stmt->fetchAll(\PDO::FETCH_ASSOC);
 
-            // Defensive programming: If the query fails, default to an empty array so array_map doesn't crash
             if (!is_array($recipes)) {
                 $recipes = [];
             }
@@ -450,7 +454,6 @@ public function getAllRecipes() {
                     'description' => $r['description'],
                     'yields' => $r['yields'],
 
-                    // Support both snake_case (standard DB) and camelCase
                     'image_url' => $r['image_url'],
                     'imageUrl' => $r['image_url'],
                     'image_source' => $r['image_source'],
@@ -480,6 +483,7 @@ public function getAllRecipes() {
                     'ratingCount' => (int)($r['rating_count'] ?? 0),
 
                     'isOwner' => ((int)$r['user_id'] === (int)$userId),
+                    'is_favorite' => true,
                     'isFavorited' => true
                 ];
             }, $recipes);
@@ -490,7 +494,6 @@ public function getAllRecipes() {
             echo json_encode(["error" => "Failed to load favorites: " . $e->getMessage()]);
         }
     }
-
     public function toggleFavorite() {
         // Enforce a strict JSON response so React doesn't throw a wobbly
         header('Content-Type: application/json');
