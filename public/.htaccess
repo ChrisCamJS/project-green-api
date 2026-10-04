@@ -1,0 +1,12 @@
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    
+    # 1. Intercept bots, capture the numeric ID, and pass it as a query parameter
+    RewriteCond %{HTTP_USER_AGENT} (facebookexternalhit|twitterbot|linkedinbot|whatsapp|skype|slackbot|telegrambot|pinterest) [NC]
+    RewriteRule ^recipe/([0-9]+)/?$ bot-handler.php?id=$1 [QSA,L]
+    
+    # 2. Standard routing for actual humans (forwarding to index.php)
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^(.*)$ index.php [QSA,L]
+</IfModule>

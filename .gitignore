@@ -28,4 +28,6 @@ dist-ssr
 .env.local
 
 pantry-rebuild-api/
-public/
+public/images
+public/uploads
+public/emergency_reset.php
