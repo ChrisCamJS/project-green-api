@@ -1,0 +1,573 @@
+<?php
+
+namespace App\Controllers;
+
+use App\Database;
+use PDO;
+
+class ProfileController {
+    private $db;
+
+    public function __construct() {
+        $this->db = Database::connect();
+        $this->ensureSchema();
+    }
+
+    /**
+     * Ensures profile columns on `users` and the `user_follows` table exist.
+     */
+    private function ensureSchema(): void {
+        $existingCols = $this->db->query("SHOW COLUMNS FROM users")->fetchAll(PDO::FETCH_COLUMN);
+        $columnsToAdd = [
+            'display_name' => "ALTER TABLE users ADD COLUMN display_name VARCHAR(100) DEFAULT NULL",
+            'location' => "ALTER TABLE users ADD COLUMN location VARCHAR(120) DEFAULT NULL",
+            'bio' => "ALTER TABLE users ADD COLUMN bio TEXT DEFAULT NULL",
+            'profile_image' => "ALTER TABLE users ADD COLUMN profile_image VARCHAR(255) DEFAULT NULL",
+            'favorite_cuisine' => "ALTER TABLE users ADD COLUMN favorite_cuisine VARCHAR(120) DEFAULT NULL",
+            'dietary_focus' => "ALTER TABLE users ADD COLUMN dietary_focus VARCHAR(120) DEFAULT NULL",
+            'website_url' => "ALTER TABLE users ADD COLUMN website_url VARCHAR(255) DEFAULT NULL",
+            'pronouns' => "ALTER TABLE users ADD COLUMN pronouns VARCHAR(50) DEFAULT NULL",
+        ];
+
+        foreach ($columnsToAdd as $col => $sql) {
+            if (!in_array($col, $existingCols, true)) {
+                $this->db->exec($sql);
+            }
+        }
+
+        $this->db->exec("
+            CREATE TABLE IF NOT EXISTS user_follows (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                follower_id INT NOT NULL,
+                followed_id INT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY uniq_follow (follower_id, followed_id),
+                KEY idx_follower (follower_id),
+                KEY idx_followed (followed_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ");
+
+        $recipeCols = $this->db->query("SHOW COLUMNS FROM recipes")->fetchAll(PDO::FETCH_COLUMN);
+        if (!in_array('is_gluten_free', $recipeCols, true)) {
+            $this->db->exec("ALTER TABLE recipes ADD COLUMN is_gluten_free TINYINT(1) NOT NULL DEFAULT 0 AFTER is_oil_free");
+        }
+        if (!in_array('is_sugar_free', $recipeCols, true)) {
+            $this->db->exec("ALTER TABLE recipes ADD COLUMN is_sugar_free TINYINT(1) NOT NULL DEFAULT 1 AFTER is_gluten_free");
+        }
+    }
+
+    /**
+     * Requires an active authenticated session and returns the user ID.
+     */
+    private function requireAuth(): int {
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+
+        $userId = $_SESSION['user_id'] ?? null;
+        if (!$userId) {
+            http_response_code(401);
+            echo json_encode([
+                "success" => false,
+                "message" => "Access denied. Please log into the Vault first."
+            ]);
+            exit;
+        }
+
+        return (int)$userId;
+    }
+
+    /**
+     * GET /users/profile
+     * Fetches a public profile by id/username/identifier, or the logged-in user's own profile.
+     */
+    public function getProfile() {
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+        $currentUserId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
+
+        $identifier = $_GET['identifier'] ?? $_GET['id'] ?? $_GET['username'] ?? null;
+        if ($identifier !== null) {
+            $identifier = trim((string)$identifier);
+        }
+
+        if ($identifier === null || $identifier === '') {
+            if ($currentUserId <= 0) {
+                http_response_code(401);
+                echo json_encode(["success" => false, "message" => "Please log in to view your profile."]);
+                return;
+            }
+            $lookupSql = "SELECT id, username, email, display_name, location, bio, profile_image,
+                                 favorite_cuisine, dietary_focus, website_url, pronouns,
+                                 account_tier, generation_tokens, is_admin, created_at
+                          FROM users WHERE id = :val LIMIT 1";
+            $lookupVal = $currentUserId;
+        } elseif (ctype_digit($identifier)) {
+            $lookupSql = "SELECT id, username, email, display_name, location, bio, profile_image,
+                                 favorite_cuisine, dietary_focus, website_url, pronouns,
+                                 account_tier, generation_tokens, is_admin, created_at
+                          FROM users WHERE id = :val LIMIT 1";
+            $lookupVal = (int)$identifier;
+        } else {
+            $lookupSql = "SELECT id, username, email, display_name, location, bio, profile_image,
+                                 favorite_cuisine, dietary_focus, website_url, pronouns,
+                                 account_tier, generation_tokens, is_admin, created_at
+                          FROM users WHERE username = :val LIMIT 1";
+            $lookupVal = $identifier;
+        }
+
+        $stmt = $this->db->prepare($lookupSql);
+        $stmt->execute([':val' => $lookupVal]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$user) {
+            http_response_code(404);
+            echo json_encode(["success" => false, "message" => "Chef profile not found in the Vault."]);
+            return;
+        }
+
+        $targetUserId = (int)$user['id'];
+        $isOwnProfile = $currentUserId > 0 && $currentUserId === $targetUserId;
+
+        $followerStmt = $this->db->prepare("SELECT COUNT(*) FROM user_follows WHERE followed_id = ?");
+        $followerStmt->execute([$targetUserId]);
+        $followerCount = (int)$followerStmt->fetchColumn();
+
+        $followingStmt = $this->db->prepare("SELECT COUNT(*) FROM user_follows WHERE follower_id = ?");
+        $followingStmt->execute([$targetUserId]);
+        $followingCount = (int)$followingStmt->fetchColumn();
+
+        $isFollowing = false;
+        if ($currentUserId > 0 && !$isOwnProfile) {
+            $checkFollowStmt = $this->db->prepare("SELECT 1 FROM user_follows WHERE follower_id = ? AND followed_id = ? LIMIT 1");
+            $checkFollowStmt->execute([$currentUserId, $targetUserId]);
+            $isFollowing = (bool)$checkFollowStmt->fetchColumn();
+        }
+
+        $recipesSql = "SELECT r.id, r.user_id, r.title, r.description, r.image_url, r.yields,
+                              r.prep_time_mins, r.cook_time_mins, r.is_wfpb, r.is_oil_free,
+                              r.is_gluten_free, r.is_sugar_free,
+                              r.is_public, r.image_source, r.created_at, r.average_rating, r.rating_count,
+                              u.username AS author_name,
+                              u.display_name AS author_display_name,
+                              u.profile_image AS author_avatar,
+                              CASE WHEN rf.recipe_id IS NOT NULL THEN 1 ELSE 0 END AS is_favorite
+                       FROM recipes r
+                       LEFT JOIN users u ON r.user_id = u.id
+                       LEFT JOIN recipe_favorites rf ON rf.recipe_id = r.id AND rf.user_id = :fav_user_id
+                       WHERE r.user_id = :target_user_id AND r.is_public = 1
+                       ORDER BY r.created_at DESC";
+        $recipesStmt = $this->db->prepare($recipesSql);
+        $recipesStmt->execute([
+            ':fav_user_id' => $currentUserId,
+            ':target_user_id' => $targetUserId
+        ]);
+        $rawRecipes = $recipesStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $formattedRecipes = array_map(function($r) use ($isFollowing) {
+            return [
+                'id' => (int)$r['id'],
+                'user_id' => $r['user_id'] ? (int)$r['user_id'] : null,
+                'authorId' => $r['user_id'] ? (int)$r['user_id'] : null,
+                'title' => $r['title'],
+                'authorName' => $r['author_name'] ?? 'Emma (AI)',
+                'authorDisplayName' => $r['author_display_name'] ?? null,
+                'authorAvatar' => $r['author_avatar'] ?? null,
+                'isFollowedAuthor' => $isFollowing,
+                'description' => $r['description'],
+                'prepTime' => (int)$r['prep_time_mins'],
+                'cookTime' => (int)$r['cook_time_mins'],
+                'imageUrl' => $r['image_url'],
+                'yields' => $r['yields'],
+                'isWfpb' => (bool)$r['is_wfpb'],
+                'is_oil_free' => (bool)$r['is_oil_free'],
+                'isOilFree' => (bool)$r['is_oil_free'],
+                'is_gluten_free' => (bool)($r['is_gluten_free'] ?? 0),
+                'isGlutenFree' => (bool)($r['is_gluten_free'] ?? 0),
+                'is_sugar_free' => (bool)($r['is_sugar_free'] ?? 1),
+                'isSugarFree' => (bool)($r['is_sugar_free'] ?? 1),
+                'isDraft' => !(bool)$r['is_public'],
+                'isPublic' => (bool)$r['is_public'],
+                'imageSource' => $r['image_source'],
+                'createdAt' => $r['created_at'],
+                'averageRating' => (float)($r['average_rating'] ?? 0),
+                'ratingCount' => (int)($r['rating_count'] ?? 0),
+                'is_favorite' => (bool)$r['is_favorite'],
+                'isFavorited' => (bool)$r['is_favorite']
+            ];
+        }, $rawRecipes);
+
+        $profileData = [
+            'id' => $targetUserId,
+            'username' => $user['username'],
+            'display_name' => $user['display_name'],
+            'location' => $user['location'],
+            'bio' => $user['bio'],
+            'profile_image' => $user['profile_image'],
+            'favorite_cuisine' => $user['favorite_cuisine'],
+            'dietary_focus' => $user['dietary_focus'],
+            'website_url' => $user['website_url'],
+            'pronouns' => $user['pronouns'],
+            'account_tier' => $user['account_tier'],
+            'is_admin' => (int)$user['is_admin'],
+            'created_at' => $user['created_at'],
+            'follower_count' => $followerCount,
+            'following_count' => $followingCount,
+            'recipe_count' => count($formattedRecipes),
+            'is_following' => $isFollowing,
+            'is_own_profile' => $isOwnProfile,
+        ];
+
+        if ($isOwnProfile) {
+            $profileData['email'] = $user['email'];
+            $profileData['generation_tokens'] = (float)$user['generation_tokens'];
+        }
+
+        echo json_encode([
+            "success" => true,
+            "profile" => $profileData,
+            "recipes" => $formattedRecipes
+        ]);
+    }
+
+    /**
+     * PUT /users/profile
+     * Updates the authenticated user's public profile fields and optional avatar image.
+     */
+    public function updateProfile() {
+        $userId = $this->requireAuth();
+        $data = json_decode(file_get_contents("php://input"), true);
+        if (!is_array($data)) {
+            $data = [];
+        }
+
+        $username = trim((string)($data['username'] ?? ''));
+        if (strlen($username) < 3 || strlen($username) > 50) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Username must be between 3 and 50 characters."]);
+            return;
+        }
+
+        // Check username uniqueness against other users
+        $checkStmt = $this->db->prepare("SELECT id FROM users WHERE username = :u AND id != :id LIMIT 1");
+        $checkStmt->execute([':u' => $username, ':id' => $userId]);
+        if ($checkStmt->fetch()) {
+            http_response_code(409);
+            echo json_encode(["success" => false, "message" => "That username is already taken by another chef."]);
+            return;
+        }
+
+        $displayName = trim((string)($data['display_name'] ?? ''));
+        $location = trim((string)($data['location'] ?? ''));
+        $bio = trim((string)($data['bio'] ?? ''));
+        $favoriteCuisine = trim((string)($data['favorite_cuisine'] ?? ''));
+        $dietaryFocus = trim((string)($data['dietary_focus'] ?? ''));
+        $websiteUrl = trim((string)($data['website_url'] ?? ''));
+        $pronouns = trim((string)($data['pronouns'] ?? ''));
+
+        if ($websiteUrl !== '' && !preg_match('#^https?://#i', $websiteUrl)) {
+            $websiteUrl = 'https://' . $websiteUrl;
+        }
+        if ($websiteUrl !== '' && !filter_var($websiteUrl, FILTER_VALIDATE_URL)) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Please enter a valid website URL (or leave it blank)."]);
+            return;
+        }
+
+        $currStmt = $this->db->prepare("SELECT profile_image FROM users WHERE id = ? LIMIT 1");
+        $currStmt->execute([$userId]);
+        $currentImage = $currStmt->fetchColumn() ?: null;
+        $newProfileImage = $currentImage;
+
+        $base64Image = $data['profile_image_base64'] ?? '';
+        $removeAvatar = !empty($data['remove_avatar']);
+
+        if (!empty($base64Image) && strpos($base64Image, 'data:image') === 0) {
+            $parts = explode(';', $base64Image, 2);
+            $type = $parts[0] ?? '';
+            $dataParts = explode(',', $parts[1] ?? '', 2);
+            $base64Body = $dataParts[1] ?? '';
+
+            $ext = 'jpg';
+            if (str_contains($type, 'png')) $ext = 'png';
+            elseif (str_contains($type, 'webp')) $ext = 'webp';
+
+            $decodedData = base64_decode($base64Body, true);
+            if ($decodedData === false || empty($decodedData)) {
+                http_response_code(400);
+                echo json_encode(["success" => false, "message" => "Invalid profile image data provided."]);
+                return;
+            }
+
+            $uploadDir = __DIR__ . '/../../public/images/avatars/';
+            if (!is_dir($uploadDir)) {
+                mkdir($uploadDir, 0755, true);
+            }
+
+            $filename = 'avatar_' . $userId . '_' . time() . '.' . $ext;
+            if (file_put_contents($uploadDir . $filename, $decodedData) === false) {
+                http_response_code(500);
+                echo json_encode(["success" => false, "message" => "Failed to save profile image to server."]);
+                return;
+            }
+
+            $newProfileImage = '/images/avatars/' . $filename;
+        } elseif ($removeAvatar) {
+            $newProfileImage = null;
+        }
+
+        $updateStmt = $this->db->prepare("
+            UPDATE users
+            SET username = :username,
+                display_name = :display_name,
+                location = :location,
+                bio = :bio,
+                favorite_cuisine = :favorite_cuisine,
+                dietary_focus = :dietary_focus,
+                website_url = :website_url,
+                pronouns = :pronouns,
+                profile_image = :profile_image
+            WHERE id = :id
+        ");
+        $updateStmt->execute([
+            ':username' => $username,
+            ':display_name' => $displayName !== '' ? substr($displayName, 0, 100) : null,
+            ':location' => $location !== '' ? substr($location, 0, 120) : null,
+            ':bio' => $bio !== '' ? $bio : null,
+            ':favorite_cuisine' => $favoriteCuisine !== '' ? substr($favoriteCuisine, 0, 120) : null,
+            ':dietary_focus' => $dietaryFocus !== '' ? substr($dietaryFocus, 0, 120) : null,
+            ':website_url' => $websiteUrl !== '' ? substr($websiteUrl, 0, 255) : null,
+            ':pronouns' => $pronouns !== '' ? substr($pronouns, 0, 50) : null,
+            ':profile_image' => $newProfileImage,
+            ':id' => $userId,
+        ]);
+
+        $_SESSION['username'] = $username;
+
+        // Keep past comments consistent with the updated username
+        $commentUpdateStmt = $this->db->prepare("UPDATE recipe_comments SET author_name = :u WHERE user_id = :id");
+        $commentUpdateStmt->execute([':u' => $username, ':id' => $userId]);
+
+        $fetchStmt = $this->db->prepare("
+            SELECT id, username, email, display_name, location, bio, profile_image,
+                   favorite_cuisine, dietary_focus, website_url, pronouns,
+                   is_admin, account_tier, generation_tokens, created_at
+            FROM users WHERE id = ? LIMIT 1
+        ");
+        $fetchStmt->execute([$userId]);
+        $updatedUser = $fetchStmt->fetch(PDO::FETCH_ASSOC);
+
+        echo json_encode([
+            "success" => true,
+            "message" => "Profile updated!",
+            "user" => $updatedUser
+        ]);
+    }
+
+    /**
+     * PUT /users/email
+     * Updates the authenticated user's email address after verifying their current password.
+     */
+    public function updateEmail() {
+        $userId = $this->requireAuth();
+        $data = json_decode(file_get_contents("php://input"), true) ?: [];
+
+        $newEmail = trim((string)($data['email'] ?? ''));
+        $currentPassword = (string)($data['currentPassword'] ?? '');
+
+        if ($newEmail === '' || !filter_var($newEmail, FILTER_VALIDATE_EMAIL)) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Please enter a valid email address."]);
+            return;
+        }
+
+        if ($currentPassword === '') {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Current password is required to change your email."]);
+            return;
+        }
+
+        $stmt = $this->db->prepare("SELECT password_hash FROM users WHERE id = ? LIMIT 1");
+        $stmt->execute([$userId]);
+        $hash = $stmt->fetchColumn();
+
+        if (!$hash || !password_verify($currentPassword, $hash)) {
+            http_response_code(403);
+            echo json_encode(["success" => false, "message" => "Current password is incorrect."]);
+            return;
+        }
+
+        $dupStmt = $this->db->prepare("SELECT id FROM users WHERE email = :email AND id != :id LIMIT 1");
+        $dupStmt->execute([':email' => $newEmail, ':id' => $userId]);
+        if ($dupStmt->fetch()) {
+            http_response_code(409);
+            echo json_encode(["success" => false, "message" => "That email address is already registered to another account."]);
+            return;
+        }
+
+        $updateStmt = $this->db->prepare("UPDATE users SET email = :email WHERE id = :id");
+        $updateStmt->execute([':email' => $newEmail, ':id' => $userId]);
+        $_SESSION['email'] = $newEmail;
+
+        echo json_encode([
+            "success" => true,
+            "message" => "Email address updated successfully!",
+            "email" => $newEmail
+        ]);
+    }
+
+    /**
+     * PUT /users/password
+     * Updates the authenticated user's password after verifying their current password.
+     */
+    public function updatePassword() {
+        $userId = $this->requireAuth();
+        $data = json_decode(file_get_contents("php://input"), true) ?: [];
+
+        $currentPassword = (string)($data['currentPassword'] ?? '');
+        $newPassword = (string)($data['newPassword'] ?? '');
+        $confirmPassword = $data['confirmPassword'] ?? null;
+
+        if ($currentPassword === '' || $newPassword === '') {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Current and new passwords are required."]);
+            return;
+        }
+
+        if (strlen($newPassword) < 8) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Your new password must be at least 8 characters long."]);
+            return;
+        }
+
+        if ($confirmPassword !== null && $newPassword !== $confirmPassword) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "New passwords do not match."]);
+            return;
+        }
+
+        $stmt = $this->db->prepare("SELECT password_hash FROM users WHERE id = ? LIMIT 1");
+        $stmt->execute([$userId]);
+        $hash = $stmt->fetchColumn();
+
+        if (!$hash || !password_verify($currentPassword, $hash)) {
+            http_response_code(403);
+            echo json_encode(["success" => false, "message" => "Current password is incorrect."]);
+            return;
+        }
+
+        $newHash = password_hash($newPassword, PASSWORD_DEFAULT);
+        $updateStmt = $this->db->prepare("UPDATE users SET password_hash = :hash WHERE id = :id");
+        $updateStmt->execute([':hash' => $newHash, ':id' => $userId]);
+
+        echo json_encode([
+            "success" => true,
+            "message" => "Password updated successfully!"
+        ]);
+    }
+
+    /**
+     * POST /users/follow
+     * Follows or unfollows another user.
+     */
+    public function toggleFollow() {
+        $followerId = $this->requireAuth();
+        $data = json_decode(file_get_contents("php://input"), true) ?: [];
+
+        $followedId = (int)($data['followed_id'] ?? 0);
+        $action = $data['action'] ?? null;
+
+        if ($followedId <= 0) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "A valid chef ID is required."]);
+            return;
+        }
+
+        if ($followedId === $followerId) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "You cannot follow yourself, love."]);
+            return;
+        }
+
+        $userCheck = $this->db->prepare("SELECT id, username FROM users WHERE id = ? LIMIT 1");
+        $userCheck->execute([$followedId]);
+        $targetUser = $userCheck->fetch(PDO::FETCH_ASSOC);
+        if (!$targetUser) {
+            http_response_code(404);
+            echo json_encode(["success" => false, "message" => "Target user not found."]);
+            return;
+        }
+
+        $existsStmt = $this->db->prepare("SELECT id FROM user_follows WHERE follower_id = ? AND followed_id = ? LIMIT 1");
+        $existsStmt->execute([$followerId, $followedId]);
+        $alreadyFollowing = (bool)$existsStmt->fetchColumn();
+
+        if ($alreadyFollowing && $action !== 'follow') {
+            $delStmt = $this->db->prepare("DELETE FROM user_follows WHERE follower_id = ? AND followed_id = ?");
+            $delStmt->execute([$followerId, $followedId]);
+            $isFollowing = false;
+            $message = "Unfollowed @{$targetUser['username']}.";
+        } elseif (!$alreadyFollowing && $action !== 'unfollow') {
+            $insStmt = $this->db->prepare("INSERT IGNORE INTO user_follows (follower_id, followed_id) VALUES (?, ?)");
+            $insStmt->execute([$followerId, $followedId]);
+            $isFollowing = true;
+            $message = "Now following @{$targetUser['username']}! Their recipes will appear first in your feed.";
+        } else {
+            $isFollowing = $alreadyFollowing;
+            $message = $isFollowing ? "Already following @{$targetUser['username']}." : "Not following @{$targetUser['username']}.";
+        }
+
+        $countStmt = $this->db->prepare("SELECT COUNT(*) FROM user_follows WHERE followed_id = ?");
+        $countStmt->execute([$followedId]);
+        $followerCount = (int)$countStmt->fetchColumn();
+
+        echo json_encode([
+            "success" => true,
+            "isFollowing" => $isFollowing,
+            "followerCount" => $followerCount,
+            "message" => $message
+        ]);
+    }
+
+    /**
+     * GET /users/following
+     * Lists all chefs currently followed by the authenticated user.
+     */
+    public function getFollowing() {
+        $followerId = $this->requireAuth();
+
+        $sql = "SELECT u.id, u.username, u.display_name, u.location, u.bio, u.profile_image,
+                       u.favorite_cuisine, u.dietary_focus, uf.created_at AS followed_at,
+                       (SELECT COUNT(*) FROM recipes r WHERE r.user_id = u.id AND r.is_public = 1) AS recipe_count,
+                       (SELECT COUNT(*) FROM user_follows uf2 WHERE uf2.followed_id = u.id) AS follower_count
+                FROM user_follows uf
+                JOIN users u ON uf.followed_id = u.id
+                WHERE uf.follower_id = :follower_id
+                ORDER BY uf.created_at DESC";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([':follower_id' => $followerId]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $following = array_map(function($row) {
+            return [
+                'id' => (int)$row['id'],
+                'username' => $row['username'],
+                'display_name' => $row['display_name'],
+                'location' => $row['location'],
+                'bio' => $row['bio'],
+                'profile_image' => $row['profile_image'],
+                'favorite_cuisine' => $row['favorite_cuisine'],
+                'dietary_focus' => $row['dietary_focus'],
+                'followed_at' => $row['followed_at'],
+                'recipe_count' => (int)$row['recipe_count'],
+                'follower_count' => (int)$row['follower_count'],
+            ];
+        }, $rows);
+
+        echo json_encode([
+            "success" => true,
+            "following" => $following
+        ]);
+    }
+}

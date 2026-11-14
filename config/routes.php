@@ -39,6 +39,14 @@ $router->add('POST', '/recipes/attach-photo', 'RecipeController', 'publishWithPh
 $router->add('POST', '/recipes/upgrade-nutrition', 'RecipeController', 'upgradeRecipeNutrition');
 $router->add('POST', '/recipes/publish-draft', 'RecipeController', 'publishDraft');
 
+// USER PROFILES & FOLLOWING
+$router->add('GET', '/users/profile', 'ProfileController', 'getProfile');
+$router->add('PUT', '/users/profile', 'ProfileController', 'updateProfile');
+$router->add('PUT', '/users/email', 'ProfileController', 'updateEmail');
+$router->add('PUT', '/users/password', 'ProfileController', 'updatePassword');
+$router->add('POST', '/users/follow', 'ProfileController', 'toggleFollow');
+$router->add('GET', '/users/following', 'ProfileController', 'getFollowing');
+
 // EXTRAS & MEDIA
 $router->add('POST', '/upload', 'RecipeController', 'uploadImages');
 $router->add('POST', '/recipes/save-generated', 'RecipeController', 'saveGeneratedRecipe');

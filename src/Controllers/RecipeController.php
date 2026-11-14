@@ -26,45 +26,67 @@ public function getAllRecipes() {
             if (session_status() === PHP_SESSION_NONE) {
                 session_start();
             }
-            $currentUserId = $_SESSION['user_id'] ?? null;
+            $currentUserId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
             $db = Database::connect();
             
             // Check if the user is an admin (assuming you start the session at the top of the method)
             $isAdmin = isset($_SESSION['is_admin']) && $_SESSION['is_admin'] == 1;
 
-            // Base query
-            $sql = "SELECT r.id, r.title, r.description, r.image_url, r.yields, 
-                        r.prep_time_mins, r.cook_time_mins, r.is_wfpb, r.is_oil_free, 
+            // Base query — prioritize recipes created by users that the logged-in user follows
+            $sql = "SELECT r.id, r.user_id, r.title, r.description, r.image_url, r.yields, 
+                        r.prep_time_mins, r.cook_time_mins, r.is_wfpb, r.is_oil_free,
+                        r.is_gluten_free, r.is_sugar_free,
                         r.is_public, r.image_source, r.created_at, r.average_rating, r.rating_count,
-                        u.username AS author_name, 
-                        CASE WHEN rf.recipe_id IS NOT NULL THEN 1 ELSE 0 END AS is_favorite
+                        u.username AS author_name,
+                        u.display_name AS author_display_name,
+                        u.profile_image AS author_avatar,
+                        CASE WHEN rf.recipe_id IS NOT NULL THEN 1 ELSE 0 END AS is_favorite,
+                        CASE WHEN uf.followed_id IS NOT NULL THEN 1 ELSE 0 END AS is_followed_author
                     FROM recipes r
                     LEFT JOIN users u ON r.user_id = u.id
-                    LEFT JOIN recipe_favorites rf ON rf.recipe_id = r.id AND rf.user_id = :current_user_id";
+                    LEFT JOIN recipe_favorites rf ON rf.recipe_id = r.id AND rf.user_id = :fav_user_id
+                    LEFT JOIN user_follows uf ON uf.followed_id = r.user_id AND uf.follower_id = :follow_user_id";
 
             // Only hide non-public recipes if the user IS NOT an admin
             if (!$isAdmin) {
                 $sql .= " WHERE r.is_public = 1";
             }
 
-            $sql .= " ORDER BY r.created_at DESC";
+            $sql .= " ORDER BY is_followed_author DESC, r.created_at DESC";
                     
             $stmt = $db->prepare($sql);
-            $stmt->execute([':current_user_id' => $currentUserId]);
+            $stmt->execute([
+                ':fav_user_id' => $currentUserId,
+                ':follow_user_id' => $currentUserId
+            ]);
             $recipes = $stmt->fetchAll(\PDO::FETCH_ASSOC);
 
             $formatted = array_map(function($r) {
                 return [
                     'id' => $r['id'],
+                    'user_id' => $r['user_id'] ? (int)$r['user_id'] : null,
+                    'authorId' => $r['user_id'] ? (int)$r['user_id'] : null,
                     'title' => $r['title'],
                     'authorName' => $r['author_name'] ?? 'Emma (AI)', // Falls back to me if no user is found!
+                    'authorDisplayName' => $r['author_display_name'] ?? null,
+                    'authorAvatar' => $r['author_avatar'] ?? null,
+                    'isFollowedAuthor' => (bool)$r['is_followed_author'],
                     'description' => $r['description'],
                     'prepTime' => $r['prep_time_mins'],
                     'cookTime' => $r['cook_time_mins'],
                     'imageUrl' => $r['image_url'],
                     'yields' => $r['yields'],
                     'isWfpb' => (bool)$r['is_wfpb'], 
+                    'is_oil_free' => (bool)$r['is_oil_free'],
                     'isOilFree' => (bool)$r['is_oil_free'],
+                    'is_gluten_free' => (bool)($r['is_gluten_free'] ?? 0),
+                    'isGlutenFree' => (bool)($r['is_gluten_free'] ?? 0),
+                    'is_sugar_free' => (bool)($r['is_sugar_free'] ?? 1),
+                    'isSugarFree' => (bool)($r['is_sugar_free'] ?? 1),
+                    'is_gluten_free' => (bool)($r['is_gluten_free'] ?? 0),
+                    'isGlutenFree' => (bool)($r['is_gluten_free'] ?? 0),
+                    'is_sugar_free' => (bool)($r['is_sugar_free'] ?? 1),
+                    'isSugarFree' => (bool)($r['is_sugar_free'] ?? 1),
                     'isDraft' => !(bool)$r['is_public'], 
                     'isPublic' => (bool)$r['is_public'],
                     'imageSource' => $r['image_source'],
@@ -101,8 +123,16 @@ public function getAllRecipes() {
         }
 
         try {
-            // 2. Fetch the overarching recipe details AND the author's username
-            $sql = "SELECT r.*, u.username AS author_name 
+            if (session_status() === PHP_SESSION_NONE) {
+                session_start();
+            }
+            $currentUserId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
+
+            // 2. Fetch the overarching recipe details AND the author's username & profile metadata
+            $sql = "SELECT r.*, u.username AS author_name,
+                           u.display_name AS author_display_name,
+                           u.profile_image AS author_avatar,
+                           u.location AS author_location
                     FROM recipes r 
                     LEFT JOIN users u ON r.user_id = u.id 
                     WHERE r.id = ?";
@@ -116,8 +146,24 @@ public function getAllRecipes() {
                 return;
             }
 
-            // Map the author name for React
+            $authorId = $recipe['user_id'] ? (int)$recipe['user_id'] : null;
+            $isFollowedAuthor = false;
+            if ($currentUserId > 0 && $authorId && $authorId !== $currentUserId) {
+                $followStmt = $this->db->prepare("SELECT 1 FROM user_follows WHERE follower_id = ? AND followed_id = ? LIMIT 1");
+                $followStmt->execute([$currentUserId, $authorId]);
+                $isFollowedAuthor = (bool)$followStmt->fetchColumn();
+            }
+
+            // Map the author metadata for React
+            $recipe['authorId'] = $authorId;
             $recipe['authorName'] = $recipe['author_name'] ?? 'Emma (AI)';
+            $recipe['authorDisplayName'] = $recipe['author_display_name'] ?? null;
+            $recipe['authorAvatar'] = $recipe['author_avatar'] ?? null;
+            $recipe['authorLocation'] = $recipe['author_location'] ?? null;
+            $recipe['isFollowedAuthor'] = $isFollowedAuthor;
+            $recipe['isOilFree'] = (bool)($recipe['is_oil_free'] ?? 0);
+            $recipe['isGlutenFree'] = (bool)($recipe['is_gluten_free'] ?? 0);
+            $recipe['isSugarFree'] = (bool)($recipe['is_sugar_free'] ?? 1);
             // Ensure camelCase imageUrl is present
             $recipe['imageUrl'] = $recipe['image_url'];
 
@@ -169,6 +215,9 @@ public function getAllRecipes() {
         $rawYields = $data['yields'] ?? '4 servings';
         $yields = substr($rawYields, 0, 50);
         $notes = $data['notes'] ?? '';
+        $isOilFree = isset($data['isOilFree']) ? (int)(bool)$data['isOilFree'] : 1;
+        $isGlutenFree = isset($data['isGlutenFree']) ? (int)(bool)$data['isGlutenFree'] : 0;
+        $isSugarFree = isset($data['isSugarFree']) ? (int)(bool)$data['isSugarFree'] : 1;
 
         $isPublic = 0; 
         $imageSource = 'none';
@@ -215,9 +264,9 @@ public function getAllRecipes() {
             $userId = $_SESSION['user_id'] ?? null;
 
             $sqlRecipe = "INSERT INTO recipes 
-                (user_id, title, description, notes, image_url, yields, prep_time_mins, cook_time_mins, is_wfpb, is_oil_free, is_public, image_source) 
+                (user_id, title, description, notes, image_url, yields, prep_time_mins, cook_time_mins, is_wfpb, is_oil_free, is_gluten_free, is_sugar_free, is_public, image_source) 
                 VALUES 
-                (:user_id, :title, :description, :notes, :image_url, :yields, :prep_time_mins, :cook_time_mins, 1, 1, :is_public, :image_source)";
+                (:user_id, :title, :description, :notes, :image_url, :yields, :prep_time_mins, :cook_time_mins, 1, :is_oil_free, :is_gluten_free, :is_sugar_free, :is_public, :image_source)";
             
             $stmtRecipe = $db->prepare($sqlRecipe);
             $stmtRecipe->execute([
@@ -229,6 +278,9 @@ public function getAllRecipes() {
                 ':yields' => $yields,
                 ':prep_time_mins' => $prepTime,
                 ':cook_time_mins' => $cookTime,
+                ':is_oil_free' => $isOilFree,
+                ':is_gluten_free' => $isGlutenFree,
+                ':is_sugar_free' => $isSugarFree,
                 ':is_public' => $isPublic,
                 ':image_source' => $imageSource
             ]);
@@ -725,18 +777,23 @@ public function getUserFavorites() {
 
             // Fetch only recipes present in recipe_favorites for this user
             $sql = "SELECT r.id, r.user_id, r.title, r.description, r.image_url, r.yields, 
-                           r.prep_time_mins, r.cook_time_mins, r.is_wfpb, r.is_oil_free, 
+                           r.prep_time_mins, r.cook_time_mins, r.is_wfpb, r.is_oil_free,
+                           r.is_gluten_free, r.is_sugar_free,
                            r.is_public, r.image_source, r.created_at, r.average_rating, r.rating_count,
                            rf.created_at as favorited_at,
-                           u.username AS author_name
+                           u.username AS author_name,
+                           u.display_name AS author_display_name,
+                           u.profile_image AS author_avatar,
+                           CASE WHEN uf.followed_id IS NOT NULL THEN 1 ELSE 0 END AS is_followed_author
                     FROM recipe_favorites rf
                     JOIN recipes r ON rf.recipe_id = r.id
                     LEFT JOIN users u ON r.user_id = u.id
+                    LEFT JOIN user_follows uf ON uf.followed_id = r.user_id AND uf.follower_id = ?
                     WHERE rf.user_id = ?
                     ORDER BY rf.created_at DESC";
 
             $stmt = $db->prepare($sql);
-            $stmt->execute([$userId]);
+            $stmt->execute([$userId, $userId]);
             $recipes = $stmt->fetchAll(\PDO::FETCH_ASSOC);
 
             if (!is_array($recipes)) {
@@ -746,8 +803,13 @@ public function getUserFavorites() {
             $formatted = array_map(function($r) use ($userId) {
                 return [
                     'id' => (int)$r['id'],
+                    'user_id' => $r['user_id'] ? (int)$r['user_id'] : null,
+                    'authorId' => $r['user_id'] ? (int)$r['user_id'] : null,
                     'title' => $r['title'],
                     'authorName' => $r['author_name'] ?? 'Emma (AI)',
+                    'authorDisplayName' => $r['author_display_name'] ?? null,
+                    'authorAvatar' => $r['author_avatar'] ?? null,
+                    'isFollowedAuthor' => (bool)$r['is_followed_author'],
                     'description' => $r['description'],
                     'yields' => $r['yields'],
 
@@ -765,6 +827,10 @@ public function getUserFavorites() {
                     'isWfpb' => (bool)$r['is_wfpb'],
                     'is_oil_free' => (bool)$r['is_oil_free'],
                     'isOilFree' => (bool)$r['is_oil_free'],
+                    'is_gluten_free' => (bool)($r['is_gluten_free'] ?? 0),
+                    'isGlutenFree' => (bool)($r['is_gluten_free'] ?? 0),
+                    'is_sugar_free' => (bool)($r['is_sugar_free'] ?? 1),
+                    'isSugarFree' => (bool)($r['is_sugar_free'] ?? 1),
 
                     'is_public' => (bool)$r['is_public'],
                     'isPublic' => (bool)$r['is_public'],
@@ -932,7 +998,7 @@ public function getUserFavorites() {
 
         $db = Database::connect();
         $stmt = $db->prepare("
-            SELECT id, parent_id, author_name, body, image_url, likes, dislikes, created_at 
+            SELECT id, parent_id, user_id, author_name, body, image_url, likes, dislikes, created_at 
             FROM recipe_comments 
             WHERE recipe_id = ? 
             ORDER BY created_at ASC

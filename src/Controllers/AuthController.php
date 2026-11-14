@@ -157,7 +157,9 @@ class AuthController {
         }
 
         // Updated query to check against the email column instead of username
-        $sql = "SELECT id, username, email, password_hash, is_admin, account_tier, generation_tokens FROM users WHERE email = :email LIMIT 1";
+        $sql = "SELECT id, username, email, password_hash, is_admin, account_tier, generation_tokens,
+                       display_name, location, bio, profile_image, favorite_cuisine, dietary_focus, website_url, pronouns
+                FROM users WHERE email = :email LIMIT 1";
         $stmt = $db->prepare($sql);
         $stmt->execute([':email' => $email]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
