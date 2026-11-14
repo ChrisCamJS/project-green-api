@@ -51,4 +51,10 @@ $router->add('GET', '/users/following', 'ProfileController', 'getFollowing');
 $router->add('POST', '/upload', 'RecipeController', 'uploadImages');
 $router->add('POST', '/recipes/save-generated', 'RecipeController', 'saveGeneratedRecipe');
 
+// PAYMENTS & TOKEN PURCHASES
+$router->add('GET', '/payments/config', 'PaymentController', 'getPaymentConfig');
+$router->add('POST', '/payments/create-checkout-session', 'PaymentController', 'createCheckoutSession');
+$router->add('POST', '/payments/verify-session', 'PaymentController', 'verifyCheckoutSession');
+$router->add('POST', '/payments/webhook', 'PaymentController', 'handleWebhook');
+
 return $router;

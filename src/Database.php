@@ -4,6 +4,36 @@ namespace App;
 class Database {
     private static $pdo;
 
+    /**
+     * Load key-value pairs from the project root .env file safely.
+     * Normalizes leading `#` comments to `;` so parse_ini_string() handles both styles cleanly.
+     */
+    public static function loadEnv(): array {
+        $envPath = dirname(__DIR__) . '/.env';
+        if (!file_exists($envPath)) {
+            return [];
+        }
+
+        $raw = @file_get_contents($envPath);
+        if ($raw === false) {
+            return [];
+        }
+
+        $lines = preg_split("/\r\n|\n|\r/", $raw);
+        $normalizedLines = [];
+        foreach ($lines as $line) {
+            $trimmed = ltrim($line);
+            if ($trimmed !== '' && $trimmed[0] === '#') {
+                $normalizedLines[] = ';' . substr($trimmed, 1);
+            } else {
+                $normalizedLines[] = $line;
+            }
+        }
+
+        $parsed = @parse_ini_string(implode("\n", $normalizedLines), false, INI_SCANNER_NORMAL);
+        return is_array($parsed) ? $parsed : [];
+    }
+
     public static function connect() {
         if (!self::$pdo) {
             // Explicitly map the path relative to src/
@@ -21,9 +51,9 @@ class Database {
                 exit;
             }
 
-            // 2. Safely attempt to parse the ini file
-            $env = @parse_ini_file($envPath);
-            if ($env === false) {
+            // 2. Safely parse the .env file
+            $env = self::loadEnv();
+            if (empty($env)) {
                 http_response_code(500);
                 header('Content-Type: application/json');
                 echo json_encode([
