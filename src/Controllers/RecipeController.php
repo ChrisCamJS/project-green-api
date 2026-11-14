@@ -18,6 +18,35 @@ class RecipeController {
     }
 
     /**
+     * Auto-backfill legacy rows if the live recipes table has is_gluten_free defaulting to 0 everywhere.
+     */
+    private function ensureGlutenFreeBackfilled(\PDO $db): void {
+        try {
+            $counts = $db->query("SELECT COUNT(*) AS total, COALESCE(SUM(is_gluten_free), 0) AS gf_count FROM recipes")->fetch(\PDO::FETCH_ASSOC);
+            if (!$counts || (int)$counts['total'] === 0 || (int)$counts['gf_count'] > 0) {
+                return;
+            }
+            $db->exec("
+                UPDATE recipes r
+                SET r.is_gluten_free = CASE
+                    WHEN LOWER(CONCAT_WS(' ', r.title, r.description, r.notes)) REGEXP '(^|[^a-z])(gluten[ -]?free|certified gf|golden gf)([^a-z]|$)'
+                         AND LOWER(CONCAT_WS(' ', r.title, r.description, r.notes)) NOT REGEXP 'not[ ]+gluten[ -]?free' THEN 1
+                    WHEN LOWER(r.title) REGEXP '(^|[^a-z])(wheat|bread|breadstick|breadsticks|sandwich|sub|wellington|strudel|pretzel|pretzels|pierogi|pierogies|galette|empanada|empanadas|lasagna|mac &|macaroni|spaghetti|fettuccine|linguine|penne|pasta|noodles|noodle|ramen|udon|couscous|barley|rye|spelt|farro|orzo|seitan|pancake|pancakes|waffle|waffles|muffin|muffins|cobbler|flautas|burrito|burritos|toast|hoagie|baguette|ciabatta|sourdough|pita)([^a-z]|$)' THEN 0
+                    WHEN EXISTS (
+                        SELECT 1 FROM ingredients i
+                        WHERE i.recipe_id = r.id
+                          AND LOWER(i.ingredient_name) REGEXP '(whole[- ]?wheat|wheat flour|all-purpose flour|bread flour|pastry flour|white flour|spelt|barley|rye|couscous|farro|orzo|seitan|vital wheat gluten|puff pastry|phyllo|filo|breadcrumbs|panko|soy sauce|gochujang|lasagna|linguine|spaghetti|fettuccine|penne|macaroni|ramen|udon|flour tortilla|hoagie|baguette|ciabatta|sourdough|crusty italian|pita)'
+                          AND LOWER(i.ingredient_name) NOT REGEXP '(gluten[ -]?free|tamari|coconut aminos|brown rice|rice noodle|rice flour|oat flour|almond flour|chickpea flour|corn tortilla|buckwheat)'
+                    ) THEN 0
+                    ELSE 1
+                END
+            ");
+        } catch (\Throwable $e) {
+            // Non-fatal: continue returning recipes cleanly even if column isn't writable
+        }
+    }
+
+    /**
      * Fetches the high-level list of all recipes for the Home Grid.
      * Includes core macros for the quick-view badges!
      */
@@ -28,6 +57,7 @@ public function getAllRecipes() {
             }
             $currentUserId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
             $db = Database::connect();
+            $this->ensureGlutenFreeBackfilled($db);
             
             // Check if the user is an admin (assuming you start the session at the top of the method)
             $isAdmin = isset($_SESSION['is_admin']) && $_SESSION['is_admin'] == 1;
@@ -41,7 +71,8 @@ public function getAllRecipes() {
                         u.display_name AS author_display_name,
                         u.profile_image AS author_avatar,
                         CASE WHEN rf.recipe_id IS NOT NULL THEN 1 ELSE 0 END AS is_favorite,
-                        CASE WHEN uf.followed_id IS NOT NULL THEN 1 ELSE 0 END AS is_followed_author
+                        CASE WHEN uf.followed_id IS NOT NULL THEN 1 ELSE 0 END AS is_followed_author,
+                        (SELECT GROUP_CONCAT(i.ingredient_name SEPARATOR '||') FROM ingredients i WHERE i.recipe_id = r.id) AS ingredient_names
                     FROM recipes r
                     LEFT JOIN users u ON r.user_id = u.id
                     LEFT JOIN recipe_favorites rf ON rf.recipe_id = r.id AND rf.user_id = :fav_user_id
@@ -62,6 +93,9 @@ public function getAllRecipes() {
             $recipes = $stmt->fetchAll(\PDO::FETCH_ASSOC);
 
             $formatted = array_map(function($r) {
+                $ingredients = !empty($r['ingredient_names'])
+                    ? array_values(array_filter(array_map('trim', explode('||', $r['ingredient_names']))))
+                    : [];
                 return [
                     'id' => $r['id'],
                     'user_id' => $r['user_id'] ? (int)$r['user_id'] : null,
@@ -72,6 +106,7 @@ public function getAllRecipes() {
                     'authorAvatar' => $r['author_avatar'] ?? null,
                     'isFollowedAuthor' => (bool)$r['is_followed_author'],
                     'description' => $r['description'],
+                    'ingredients' => $ingredients,
                     'prepTime' => $r['prep_time_mins'],
                     'cookTime' => $r['cook_time_mins'],
                     'imageUrl' => $r['image_url'],
@@ -79,10 +114,6 @@ public function getAllRecipes() {
                     'isWfpb' => (bool)$r['is_wfpb'], 
                     'is_oil_free' => (bool)$r['is_oil_free'],
                     'isOilFree' => (bool)$r['is_oil_free'],
-                    'is_gluten_free' => (bool)($r['is_gluten_free'] ?? 0),
-                    'isGlutenFree' => (bool)($r['is_gluten_free'] ?? 0),
-                    'is_sugar_free' => (bool)($r['is_sugar_free'] ?? 1),
-                    'isSugarFree' => (bool)($r['is_sugar_free'] ?? 1),
                     'is_gluten_free' => (bool)($r['is_gluten_free'] ?? 0),
                     'isGlutenFree' => (bool)($r['is_gluten_free'] ?? 0),
                     'is_sugar_free' => (bool)($r['is_sugar_free'] ?? 1),
