@@ -197,7 +197,8 @@ public function getAllRecipes() {
             $finalImageUrl = '/images/' . $filename;
             
             $imageSource = 'ai'; 
-            $isPublic = 1; // Unlock it for the General Public Feed!
+            $hasMasterpieceNutrition = (!empty($data['micros']) && is_array($data['micros'])) || str_contains($notes, 'Advanced Nutritional Analysis');
+            $isPublic = $hasMasterpieceNutrition ? 1 : 0; // Only publish if both image and full nutrition are included
         } else {
             $finalImageUrl = $rawImageUrl ?: '/images/default-veggie-vault-placeholder.jpg';
         }
@@ -316,7 +317,7 @@ public function getAllRecipes() {
             $db->commit();
 
             $msg = $isPublic ? "Brilliant! Full recipe vaulted and published to the feed." : "Smashing! Text draft locked in your private vault.";
-            echo json_encode(["success" => true, "message" => $msg]);
+            echo json_encode(["success" => true, "recipeId" => (int)$recipeId, "message" => $msg]);
 
         } catch (\Exception $e) {
             // Something broke. Cancel the entire transaction.
@@ -424,6 +425,258 @@ public function getAllRecipes() {
             'id' => $userId,
             'username' => $_SESSION['username'] ?? 'Vault Member'
         ];
+    }
+
+    /**
+     * Loads a recipe and verifies the active user owns it (or is an admin).
+     */
+    private function requireOwnedRecipe(int $recipeId, int $userId): array {
+        $stmt = $this->db->prepare("SELECT id, user_id, notes, image_url, image_source, is_public FROM recipes WHERE id = ?");
+        $stmt->execute([$recipeId]);
+        $recipe = $stmt->fetch(\PDO::FETCH_ASSOC);
+
+        if (!$recipe) {
+            http_response_code(404);
+            echo json_encode(["success" => false, "message" => "Recipe not found in the vault."]);
+            exit;
+        }
+
+        if ((int)$recipe['user_id'] !== $userId && empty($_SESSION['is_admin'])) {
+            http_response_code(403);
+            echo json_encode(["success" => false, "message" => "Hands off! You can only upgrade your own draft recipes."]);
+            exit;
+        }
+
+        return $recipe;
+    }
+
+    /**
+     * Checks whether a recipe has a real (non-placeholder) dish image.
+     */
+    private function hasRealImage(array $recipe): bool {
+        return !empty($recipe['image_url'])
+            && ($recipe['image_source'] ?? 'none') !== 'none'
+            && !str_contains($recipe['image_url'], 'default-veggie-vault-placeholder');
+    }
+
+    /**
+     * Checks whether a recipe has full Masterpiece nutritional details (micros or Deep Dive analysis).
+     */
+    private function hasMasterpieceNutrition(int $recipeId, array $recipe): bool {
+        $microCountStmt = $this->db->prepare("SELECT COUNT(*) FROM micros WHERE recipe_id = ?");
+        $microCountStmt->execute([$recipeId]);
+        $hasMicros = (int)$microCountStmt->fetchColumn() > 0;
+        $hasDeepDive = str_contains($recipe['notes'] ?? '', 'Advanced Nutritional Analysis');
+        return $hasMicros || $hasDeepDive;
+    }
+
+    /**
+     * Attaches a user-uploaded or AI-generated image to a saved draft/recipe.
+     * Automatically publishes as a Masterpiece if nutrition micros are already present.
+     */
+    public function publishWithPhoto() {
+        $currentUser = $this->requireAuth();
+        $userId = (int)$currentUser['id'];
+
+        $data = json_decode(file_get_contents("php://input"), true) ?: [];
+        $recipeId = (int)($data['recipe_id'] ?? 0);
+        $rawImage = $data['image'] ?? '';
+        $source = ($data['source'] ?? 'user') === 'ai' ? 'ai' : 'user';
+        $forcePublish = array_key_exists('publish', $data) && $data['publish'] !== null ? (bool)$data['publish'] : null;
+
+        if ($recipeId <= 0 || empty($rawImage)) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Recipe ID and image data are required."]);
+            return;
+        }
+
+        $recipe = $this->requireOwnedRecipe($recipeId, $userId);
+
+        $ext = 'jpg';
+        $base64Body = $rawImage;
+        if (strpos($rawImage, 'data:image') === 0) {
+            $parts = explode(';', $rawImage, 2);
+            $type = $parts[0] ?? '';
+            $dataParts = explode(',', $parts[1] ?? '', 2);
+            $base64Body = $dataParts[1] ?? '';
+
+            if (str_contains($type, 'png')) $ext = 'png';
+            elseif (str_contains($type, 'webp')) $ext = 'webp';
+        }
+
+        $decodedData = base64_decode($base64Body, true);
+        if ($decodedData === false || empty($decodedData)) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Invalid image data provided."]);
+            return;
+        }
+
+        $prefix = $source === 'ai' ? 'ai_recipe_' : 'user_recipe_';
+        $filename = time() . '_' . $prefix . $recipeId . '.' . $ext;
+        $uploadDir = __DIR__ . '/../../public/images/';
+
+        if (!is_dir($uploadDir)) {
+            mkdir($uploadDir, 0755, true);
+        }
+
+        if (file_put_contents($uploadDir . $filename, $decodedData) === false) {
+            http_response_code(500);
+            echo json_encode(["success" => false, "message" => "Failed to save image file to the vault."]);
+            return;
+        }
+
+        $finalImageUrl = '/images/' . $filename;
+
+        $hasNutrition = $this->hasMasterpieceNutrition($recipeId, $recipe);
+        $newIsPublic = ($forcePublish === false) ? 0 : ($hasNutrition ? 1 : 0);
+
+        $updateStmt = $this->db->prepare("UPDATE recipes SET image_url = :img, image_source = :src, is_public = :pub WHERE id = :id");
+        $updateStmt->execute([
+            ':img' => $finalImageUrl,
+            ':src' => $source,
+            ':pub' => $newIsPublic,
+            ':id' => $recipeId
+        ]);
+
+        echo json_encode([
+            "success" => true,
+            "imageUrl" => $finalImageUrl,
+            "imageSource" => $source,
+            "isPublic" => (bool)$newIsPublic,
+            "message" => $newIsPublic
+                ? "Image attached and recipe published as a Masterpiece!"
+                : "Dish image saved! Generate Masterpiece nutrition to publish."
+        ]);
+    }
+
+    /**
+     * Adds Emma's Deep Dive nutritional analysis and micronutrients to a saved draft/recipe.
+     * Automatically publishes as a Masterpiece if a real dish image is already attached.
+     */
+    public function upgradeRecipeNutrition() {
+        $currentUser = $this->requireAuth();
+        $userId = (int)$currentUser['id'];
+
+        $data = json_decode(file_get_contents("php://input"), true) ?: [];
+        $recipeId = (int)($data['recipe_id'] ?? 0);
+        $deepDive = trim($data['deep_dive'] ?? '');
+        $micros = $data['micros'] ?? [];
+        $forcePublish = array_key_exists('publish', $data) && $data['publish'] !== null ? (bool)$data['publish'] : null;
+
+        if ($recipeId <= 0 || ($deepDive === '' && empty($micros))) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Recipe ID and nutritional analysis data are required."]);
+            return;
+        }
+
+        $recipe = $this->requireOwnedRecipe($recipeId, $userId);
+
+        try {
+            $this->db->beginTransaction();
+
+            $existingNotes = trim($recipe['notes'] ?? '');
+            if ($deepDive !== '' && !str_contains($existingNotes, 'Advanced Nutritional Analysis')) {
+                $updatedNotes = $existingNotes !== ''
+                    ? $existingNotes . "\n\n### Advanced Nutritional Analysis\n" . $deepDive
+                    : "### Advanced Nutritional Analysis\n" . $deepDive;
+            } else {
+                $updatedNotes = $existingNotes;
+            }
+
+            $hasImage = $this->hasRealImage($recipe);
+            $hasNutrition = (is_array($micros) && !empty($micros))
+                || str_contains($updatedNotes, 'Advanced Nutritional Analysis')
+                || $this->hasMasterpieceNutrition($recipeId, $recipe);
+
+            $newIsPublic = ($forcePublish === false)
+                ? 0
+                : (($hasImage && $hasNutrition) ? 1 : 0);
+
+            $updateStmt = $this->db->prepare("UPDATE recipes SET notes = :notes, is_public = :pub WHERE id = :id");
+            $updateStmt->execute([
+                ':notes' => $updatedNotes,
+                ':pub' => $newIsPublic,
+                ':id' => $recipeId
+            ]);
+
+            if (is_array($micros) && !empty($micros)) {
+                $delStmt = $this->db->prepare("DELETE FROM micros WHERE recipe_id = ?");
+                $delStmt->execute([$recipeId]);
+
+                $insStmt = $this->db->prepare(
+                    "INSERT INTO micros (recipe_id, nutrient_name, amount, unit, daily_value_percentage, math_calculations)
+                     VALUES (:recipe_id, :nutrient_name, :amount, :unit, :daily_value_percentage, :math_calculations)"
+                );
+
+                foreach ($micros as $micro) {
+                    $insStmt->execute([
+                        ':recipe_id' => $recipeId,
+                        ':nutrient_name' => $micro['name'] ?? $micro['nutrient_name'] ?? 'Unknown',
+                        ':amount' => (float)($micro['amount'] ?? 0),
+                        ':unit' => $micro['unit'] ?? 'mg',
+                        ':daily_value_percentage' => (float)($micro['dv'] ?? $micro['daily_value_percentage'] ?? 0),
+                        ':math_calculations' => ''
+                    ]);
+                }
+            }
+
+            $this->db->commit();
+
+            $microStmt = $this->db->prepare("SELECT * FROM micros WHERE recipe_id = ?");
+            $microStmt->execute([$recipeId]);
+            $savedMicros = $microStmt->fetchAll(\PDO::FETCH_ASSOC);
+
+            echo json_encode([
+                "success" => true,
+                "notes" => $updatedNotes,
+                "micros" => $savedMicros,
+                "isPublic" => (bool)$newIsPublic,
+                "message" => $newIsPublic
+                    ? "Masterpiece nutrition added and recipe published!"
+                    : "Masterpiece nutritional analysis saved! Add a dish photo to publish."
+            ]);
+        } catch (\Exception $e) {
+            $this->db->rollBack();
+            http_response_code(500);
+            echo json_encode(["success" => false, "message" => "Database error: " . $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Publishes a saved private draft directly to the public Masterpiece feed.
+     */
+    public function publishDraft() {
+        $currentUser = $this->requireAuth();
+        $userId = (int)$currentUser['id'];
+
+        $data = json_decode(file_get_contents("php://input"), true) ?: [];
+        $recipeId = (int)($data['recipe_id'] ?? 0);
+
+        if ($recipeId <= 0) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Recipe ID is required."]);
+            return;
+        }
+
+        $recipe = $this->requireOwnedRecipe($recipeId, $userId);
+
+        if (!$this->hasRealImage($recipe) || !$this->hasMasterpieceNutrition($recipeId, $recipe)) {
+            http_response_code(400);
+            echo json_encode([
+                "success" => false,
+                "message" => "Both a dish photo (AI-generated or uploaded) and full Masterpiece nutritional details are required before publishing."
+            ]);
+            return;
+        }
+
+        $stmt = $this->db->prepare("UPDATE recipes SET is_public = 1 WHERE id = ?");
+        $stmt->execute([$recipeId]);
+
+        echo json_encode([
+            "success" => true,
+            "isPublic" => true,
+            "message" => "Your recipe is now a published Masterpiece!"
+        ]);
     }
 
     public function toggleDraft() {

@@ -36,6 +36,8 @@ $router->add('POST', '/recipes/comments/vote', 'RecipeController', 'voteOnCommen
 $router->add('POST', '/recipes/favorite', 'RecipeController', 'toggleFavorite');
 $router->add('GET', '/recipes/favorites', 'RecipeController', 'getUserFavorites');
 $router->add('POST', '/recipes/attach-photo', 'RecipeController', 'publishWithPhoto');
+$router->add('POST', '/recipes/upgrade-nutrition', 'RecipeController', 'upgradeRecipeNutrition');
+$router->add('POST', '/recipes/publish-draft', 'RecipeController', 'publishDraft');
 
 // EXTRAS & MEDIA
 $router->add('POST', '/upload', 'RecipeController', 'uploadImages');

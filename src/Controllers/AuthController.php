@@ -7,22 +7,15 @@ use PDO;
 
 class AuthController {
 
-public function register() {
-        // Find and parse the .env file safely
-        $envPath = __DIR__ . '/../.env';
-        if (!file_exists($envPath)) {
-            http_response_code(500);
-            echo json_encode(["success" => false, "message" => "Server configuration missing. Be a dear and check the .env file."]);
-            return;
-        }
-        
-        $env = parse_ini_file($envPath);
-        $beta_invite_code = $env['BETA_INVITE_CODE'] ?? null;
-
-        if (!$beta_invite_code) {
-            http_response_code(500);
-            echo json_encode(["success" => false, "message" => "Beta invite code is not configured on the server."]);
-            return;
+    public function register() {
+        // Find and parse the .env file safely (project root is two levels up from src/Controllers)
+        $envPath = dirname(__DIR__, 2) . '/.env';
+        $beta_invite_code = null;
+        if (file_exists($envPath)) {
+            $env = @parse_ini_file($envPath);
+            if (is_array($env)) {
+                $beta_invite_code = $env['BETA_INVITE_CODE'] ?? null;
+            }
         }
 
         $db = \App\Database::connect();
@@ -37,6 +30,7 @@ public function register() {
         $email = trim($data['email'] ?? '');
         $username = trim($data['username'] ?? '');
         $password = $data['password'] ?? '';
+        $confirm_password = $data['confirmPassword'] ?? null;
         $invite_code = trim($data['inviteCode'] ?? '');
 
         // 1. Check for missing fields
@@ -46,12 +40,32 @@ public function register() {
             return;
         }
 
-        // 2. The Dynamic Bouncer Check
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "That doesn't look like a valid email address, love."]);
+            return;
+        }
+
+        if (strlen($password) < 8) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Your password needs to be at least 8 characters long to keep the vault secure."]);
+            return;
+        }
+
+        if ($confirm_password !== null && $password !== $confirm_password) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Those passwords don't match, mate. Give it another go."]);
+            return;
+        }
+
+        // 2. The Dynamic Bouncer Check (Database invite_codes table + optional .env fallback)
         $codeSql = "SELECT id FROM invite_codes WHERE code = :code AND is_active = 1 LIMIT 1";
         $codeStmt = $db->prepare($codeSql);
         $codeStmt->execute([':code' => $invite_code]);
+        $validDbCode = (bool)$codeStmt->fetch();
+        $validEnvCode = ($beta_invite_code && hash_equals($beta_invite_code, $invite_code));
 
-        if (!$codeStmt->fetch()) {
+        if (!$validDbCode && !$validEnvCode) {
             http_response_code(403);
             echo json_encode(["success" => false, "message" => "Access denied. That invite code is either invalid, expired, or totally made up."]);
             return;
@@ -71,8 +85,8 @@ public function register() {
         // 4. Hash the password and insert the new user
         $password_hash = password_hash($password, PASSWORD_DEFAULT);
         
-        // Setting default tokens to 10 for new testers
-        $insertSql = "INSERT INTO users (username, email, password_hash, account_tier, generation_tokens) VALUES (:username, :email, :hash, 'free', 10)";
+        // Setting default tier to 'premium' and tokens to 10 for new beta testers
+        $insertSql = "INSERT INTO users (username, email, password_hash, account_tier, generation_tokens) VALUES (:username, :email, :hash, 'premium', 10)";
         $insertStmt = $db->prepare($insertSql);
         
         $success = $insertStmt->execute([
@@ -82,7 +96,7 @@ public function register() {
         ]);
 
         if ($success) {
-            $newUserId = $db->lastInsertId();
+            $newUserId = (int)$db->lastInsertId();
             
             // Instantly log the new mate in!
             if (session_status() === PHP_SESSION_NONE) {
@@ -93,7 +107,7 @@ public function register() {
             $_SESSION['username'] = $username;
             $_SESSION['email'] = $email;
             $_SESSION['is_admin'] = 0; // Default for new testers
-            $_SESSION['account_tier'] = 'free';
+            $_SESSION['account_tier'] = 'premium';
             $_SESSION['generation_tokens'] = 10;
             
             // Build the user array to match your login endpoint's output exactly
@@ -102,7 +116,7 @@ public function register() {
                 'username' => $username,
                 'email' => $email,
                 'is_admin' => 0,
-                'account_tier' => 'free',
+                'account_tier' => 'premium',
                 'generation_tokens' => 10
             ];
 
