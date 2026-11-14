@@ -1,9 +1,9 @@
 <?php
 /**
- * Social Crawler / Open Graph Preview Handler for Individual Recipes
+ * Social Crawler / Open Graph & Schema.org Preview Handler for Individual Recipes
  *
- * Serves recipe-specific Open Graph and Twitter/X Card meta tags to social
- * media crawlers, while redirecting any accidental human visitors to the SPA.
+ * Serves recipe-specific Open Graph, Twitter/X Card, and Recipe JSON-LD metadata
+ * to social media crawlers, while redirecting direct bot-handler.php visits to the SPA.
  */
 
 if (!headers_sent()) {
@@ -83,10 +83,30 @@ foreach ($dbCandidates as $dbFile) {
         try {
             require_once $dbFile;
             $db = \App\Database::connect();
-            $stmt = $db->prepare('SELECT title, description, image_url, image_source FROM recipes WHERE id = ? LIMIT 1');
+            $stmt = $db->prepare(
+                'SELECT r.id, r.title, r.description, r.image_url, r.image_source, r.yields,
+                        r.prep_time_mins, r.cook_time_mins, r.is_oil_free, r.is_gluten_free,
+                        r.is_sugar_free, r.average_rating, r.rating_count, r.created_at,
+                        u.username AS author_name
+                 FROM recipes r
+                 LEFT JOIN users u ON u.id = r.user_id
+                 WHERE r.id = ? LIMIT 1'
+            );
             $stmt->execute([$recipeId]);
             $row = $stmt->fetch(\PDO::FETCH_ASSOC);
             if ($row) {
+                $ingStmt = $db->prepare('SELECT ingredient_name FROM ingredients WHERE recipe_id = ?');
+                $ingStmt->execute([$recipeId]);
+                $row['ingredients'] = $ingStmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+
+                $instStmt = $db->prepare('SELECT step_number, instruction_text FROM instructions WHERE recipe_id = ? ORDER BY step_number ASC');
+                $instStmt->execute([$recipeId]);
+                $row['instructions'] = $instStmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+
+                $macroStmt = $db->prepare('SELECT calories, protein_g, carbs_g, fat_g, fiber_g FROM macros WHERE recipe_id = ? LIMIT 1');
+                $macroStmt->execute([$recipeId]);
+                $row['macros'] = $macroStmt->fetch(\PDO::FETCH_ASSOC) ?: null;
+
                 $recipe = $row;
             }
         } catch (\Throwable $e) {
@@ -144,6 +164,108 @@ if (
     $image = 'https://veggievault.chrisandemmashow.com/pantry-rebuild-api/public/' . $encodedPath;
 }
 
+// 4. Build Schema.org Recipe JSON-LD when recipe details exist
+$recipeSchema = null;
+if (!empty($recipe['title'])) {
+    $prepMins = max(0, (int)($recipe['prep_time_mins'] ?? $recipe['prepTime'] ?? 0));
+    $cookMins = max(0, (int)($recipe['cook_time_mins'] ?? $recipe['cookTime'] ?? 0));
+    $totalMins = $prepMins + $cookMins;
+
+    $schema = [
+        '@context' => 'https://schema.org',
+        '@type' => 'Recipe',
+        'name' => $title,
+        'description' => $description,
+        'url' => $url,
+        'image' => [$image],
+        'author' => [
+            '@type' => 'Person',
+            'name' => !empty($recipe['authorName']) ? $recipe['authorName'] : ($recipe['author_name'] ?? 'Emma (AI)'),
+        ],
+        'recipeCategory' => 'Plant-Based',
+        'suitableForDiet' => ['https://schema.org/VeganDiet', 'https://schema.org/VegetarianDiet'],
+    ];
+
+    if (!empty($recipe['created_at'])) {
+        $ts = strtotime((string)$recipe['created_at']);
+        if ($ts !== false) {
+            $schema['datePublished'] = date('c', $ts);
+        }
+    }
+    if (!empty($recipe['yields'])) {
+        $schema['recipeYield'] = (string)$recipe['yields'];
+    }
+    if ($prepMins > 0) {
+        $schema['prepTime'] = 'PT' . $prepMins . 'M';
+    }
+    if ($cookMins > 0) {
+        $schema['cookTime'] = 'PT' . $cookMins . 'M';
+    }
+    if ($totalMins > 0) {
+        $schema['totalTime'] = 'PT' . $totalMins . 'M';
+    }
+
+    if (!empty($recipe['is_gluten_free']) || !empty($recipe['isGlutenFree'])) {
+        $schema['suitableForDiet'][] = 'https://schema.org/GlutenFreeDiet';
+    }
+
+    if (!empty($recipe['ingredients']) && is_array($recipe['ingredients'])) {
+        $ingList = [];
+        foreach ($recipe['ingredients'] as $ing) {
+            $name = is_array($ing) ? trim((string)($ing['ingredient_name'] ?? $ing['name'] ?? '')) : trim((string)$ing);
+            if ($name !== '') {
+                $ingList[] = $name;
+            }
+        }
+        if (!empty($ingList)) {
+            $schema['recipeIngredient'] = $ingList;
+        }
+    }
+
+    if (!empty($recipe['instructions']) && is_array($recipe['instructions'])) {
+        $stepList = [];
+        foreach ($recipe['instructions'] as $idx => $step) {
+            $text = is_array($step) ? trim((string)($step['instruction_text'] ?? $step['text'] ?? '')) : trim((string)$step);
+            if ($text !== '') {
+                $stepList[] = [
+                    '@type' => 'HowToStep',
+                    'position' => is_array($step) && !empty($step['step_number']) ? (int)$step['step_number'] : ($idx + 1),
+                    'text' => $text,
+                ];
+            }
+        }
+        if (!empty($stepList)) {
+            $schema['recipeInstructions'] = $stepList;
+        }
+    }
+
+    if (!empty($recipe['macros']) && is_array($recipe['macros'])) {
+        $m = $recipe['macros'];
+        $schema['nutrition'] = array_filter([
+            '@type' => 'NutritionInformation',
+            'calories' => isset($m['calories']) ? ((float)$m['calories'] . ' calories') : null,
+            'proteinContent' => isset($m['protein_g']) ? ((float)$m['protein_g'] . ' g') : null,
+            'carbohydrateContent' => isset($m['carbs_g']) ? ((float)$m['carbs_g'] . ' g') : null,
+            'fatContent' => isset($m['fat_g']) ? ((float)$m['fat_g'] . ' g') : null,
+            'fiberContent' => isset($m['fiber_g']) ? ((float)$m['fiber_g'] . ' g') : null,
+        ]);
+    }
+
+    $ratingCount = (int)($recipe['rating_count'] ?? $recipe['ratingCount'] ?? 0);
+    $avgRating = (float)($recipe['average_rating'] ?? $recipe['averageRating'] ?? 0);
+    if ($ratingCount > 0 && $avgRating > 0) {
+        $schema['aggregateRating'] = [
+            '@type' => 'AggregateRating',
+            'ratingValue' => round($avgRating, 2),
+            'ratingCount' => $ratingCount,
+            'bestRating' => 5,
+            'worstRating' => 1,
+        ];
+    }
+
+    $recipeSchema = $schema;
+}
+
 $escapedTitle = htmlspecialchars($title, ENT_QUOTES, 'UTF-8');
 $escapedDescription = htmlspecialchars($description, ENT_QUOTES, 'UTF-8');
 $escapedImage = htmlspecialchars($image, ENT_QUOTES, 'UTF-8');
@@ -154,6 +276,9 @@ $escapedUrl = htmlspecialchars($url, ENT_QUOTES, 'UTF-8');
 <head>
     <meta charset="UTF-8" />
     <title><?= $escapedTitle ?> | The Veggie Vault</title>
+    <meta name="description" content="<?= $escapedDescription ?>" />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="<?= $escapedUrl ?>" />
 
     <!-- Open Graph for Facebook/WhatsApp/LinkedIn/Discord/Slack -->
     <meta property="og:type" content="article" />
@@ -174,10 +299,21 @@ $escapedUrl = htmlspecialchars($url, ENT_QUOTES, 'UTF-8');
     <meta name="twitter:description" content="<?= $escapedDescription ?>" />
     <meta name="twitter:image" content="<?= $escapedImage ?>" />
     <meta name="twitter:image:alt" content="<?= $escapedTitle ?>" />
+
+    <?php if ($recipeSchema): ?>
+    <script type="application/ld+json"><?= json_encode($recipeSchema, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?></script>
+    <?php endif; ?>
 </head>
 <body>
-    <!-- Redirect human visitors to the real React route -->
-    <p>Redirecting to <a href="<?= $escapedUrl ?>"><?= $escapedTitle ?></a>...</p>
-    <script>window.location.replace(<?= json_encode($url) ?>);</script>
+    <main>
+        <h1><?= $escapedTitle ?></h1>
+        <p><?= $escapedDescription ?></p>
+        <p><a href="<?= $escapedUrl ?>">View full recipe on The Veggie Vault</a></p>
+    </main>
+    <script>
+        if (window.location.pathname.indexOf('bot-handler.php') !== -1) {
+            window.location.replace(<?= json_encode($url) ?>);
+        }
+    </script>
 </body>
 </html>
