@@ -57,4 +57,11 @@ $router->add('POST', '/payments/create-checkout-session', 'PaymentController', '
 $router->add('POST', '/payments/verify-session', 'PaymentController', 'verifyCheckoutSession');
 $router->add('POST', '/payments/webhook', 'PaymentController', 'handleWebhook');
 
+// MEAL PLANNER
+$router->add('GET', '/meal-plans', 'MealPlanController', 'getMealPlans');
+$router->add('GET', '/meal-plans/recipes', 'MealPlanController', 'getPlannableRecipes');
+$router->add('POST', '/meal-plans', 'MealPlanController', 'addMealPlanEntry');
+$router->add('PUT', '/meal-plans', 'MealPlanController', 'updateMealPlanEntry');
+$router->add('DELETE', '/meal-plans', 'MealPlanController', 'deleteMealPlanEntry');
+
 return $router;
