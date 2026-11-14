@@ -378,59 +378,454 @@ public function getAllRecipes() {
             echo json_encode(["success" => false, "message" => "Database error: " . $e->getMessage()]);
         }
     }
-    /*
-     * Update an existing recipe.
-     * "Wipe and Replace" strategy for relational data.
+    /**
+     * Verifies an active administrator session.
      */
-    public function updateRecipe() {
-        if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
+    private function requireAdmin(): int {
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+        if (empty($_SESSION['is_admin'])) {
+            http_response_code(403);
+            echo json_encode(["success" => false, "message" => "Cheeky! Admin access strictly required."]);
+            exit;
+        }
+        return (int)($_SESSION['user_id'] ?? 0);
+    }
+
+    /**
+     * Normalizes an input array or newline-delimited string into trimmed non-empty lines.
+     */
+    private function normalizeTextLines($raw): array {
+        if (is_string($raw)) {
+            $lines = preg_split('/\r\n|\r|\n/', $raw) ?: [];
+        } elseif (is_array($raw)) {
+            $lines = [];
+            foreach ($raw as $item) {
+                if (is_array($item)) {
+                    $lines[] = trim((string)($item['instruction_text'] ?? $item['ingredient_name'] ?? $item['text'] ?? ''));
+                } else {
+                    $lines[] = trim((string)$item);
+                }
+            }
+        } else {
+            return [];
+        }
+
+        return array_values(array_filter(array_map('trim', $lines), fn($line) => $line !== ''));
+    }
+
+    /**
+     * Parses nutrition text lines into relational macros and micros arrays.
+     */
+    private function parseNutritionLines($nutritionInput): array {
+        $lines = $this->normalizeTextLines($nutritionInput);
+        $macros = [
+            'calories' => 0.0,
+            'protein_g' => 0.0,
+            'carbs_g' => 0.0,
+            'fat_g' => 0.0,
+            'fiber_g' => 0.0,
+        ];
+        $hasMacros = false;
+        $micros = [];
+
+        foreach ($lines as $rawLine) {
+            $line = preg_replace('/^[\-\*\x{2022}]\s+/u', '', trim($rawLine));
+            if ($line === '') {
+                continue;
+            }
+
+            if (preg_match('/^(calories|protein|carbs?|carbohydrates?|fat|fiber)\s*(?:\([^)]*\))?\s*[:\-]\s*([0-9]+(?:\.[0-9]+)?)/i', $line, $m)) {
+                $key = strtolower($m[1]);
+                $val = (float)$m[2];
+                $hasMacros = true;
+                if ($key === 'calories') {
+                    $macros['calories'] = $val;
+                } elseif ($key === 'protein') {
+                    $macros['protein_g'] = $val;
+                } elseif (str_starts_with($key, 'carb')) {
+                    $macros['carbs_g'] = $val;
+                } elseif ($key === 'fat') {
+                    $macros['fat_g'] = $val;
+                } elseif ($key === 'fiber') {
+                    $macros['fiber_g'] = $val;
+                }
+                continue;
+            }
+
+            if (preg_match('/^([^:]+?)\s*:\s*([0-9]+(?:\.[0-9]+)?)\s*([a-zA-Z\x{00B5}\x{03BC}]+)?(?:\s*\(\s*([0-9]+(?:\.[0-9]+)?)\s*%\s*(?:DV)?\s*\))?/iu', $line, $m)) {
+                $name = substr(trim($m[1]), 0, 100);
+                if ($name === '') {
+                    continue;
+                }
+                $micros[] = [
+                    'nutrient_name' => $name,
+                    'amount' => (float)$m[2],
+                    'unit' => substr(trim($m[3] ?? '') ?: 'mg', 0, 20),
+                    'daily_value_percentage' => min(999.99, (float)($m[4] ?? 0)),
+                ];
+            }
+        }
+
+        return [
+            'hasMacros' => $hasMacros,
+            'macros' => $macros,
+            'micros' => $micros,
+        ];
+    }
+
+    /**
+     * Replaces relational ingredients, instructions, macros, and micros for a recipe ID.
+     */
+    private function replaceRecipeRelations(PDO $db, int $recipeId, array $data): void {
+        if (array_key_exists('ingredients', $data)) {
+            $delIng = $db->prepare("DELETE FROM ingredients WHERE recipe_id = ?");
+            $delIng->execute([$recipeId]);
+
+            $lines = $this->normalizeTextLines($data['ingredients']);
+            if (!empty($lines)) {
+                $insIng = $db->prepare(
+                    "INSERT INTO ingredients (recipe_id, quantity, unit, ingredient_name, notes)
+                     VALUES (:recipe_id, :quantity, :unit, :ingredient_name, :notes)"
+                );
+                foreach ($lines as $line) {
+                    $insIng->execute([
+                        ':recipe_id' => $recipeId,
+                        ':quantity' => 0.00,
+                        ':unit' => '',
+                        ':ingredient_name' => substr($line, 0, 255),
+                        ':notes' => null,
+                    ]);
+                }
+            }
+        }
+
+        if (array_key_exists('instructions', $data)) {
+            $delInst = $db->prepare("DELETE FROM instructions WHERE recipe_id = ?");
+            $delInst->execute([$recipeId]);
+
+            $lines = $this->normalizeTextLines($data['instructions']);
+            if (!empty($lines)) {
+                $insInst = $db->prepare(
+                    "INSERT INTO instructions (recipe_id, step_number, instruction_text)
+                     VALUES (:recipe_id, :step_number, :instruction_text)"
+                );
+                foreach ($lines as $index => $line) {
+                    $cleanStep = preg_replace('/^(?:step\s*\d+\s*[:.)\-]\s*|\d+\s*[.)]\s+)/i', '', $line);
+                    $insInst->execute([
+                        ':recipe_id' => $recipeId,
+                        ':step_number' => $index + 1,
+                        ':instruction_text' => $cleanStep !== '' ? $cleanStep : $line,
+                    ]);
+                }
+            }
+        }
+
+        if (array_key_exists('nutritionInfo', $data)) {
+            $parsed = $this->parseNutritionLines($data['nutritionInfo']);
+
+            $mathStmt = $db->prepare("SELECT math_calculations FROM macros WHERE recipe_id = ? LIMIT 1");
+            $mathStmt->execute([$recipeId]);
+            $existingMath = (string)($mathStmt->fetchColumn() ?: '');
+
+            $delMacros = $db->prepare("DELETE FROM macros WHERE recipe_id = ?");
+            $delMacros->execute([$recipeId]);
+
+            if ($parsed['hasMacros']) {
+                $insMacros = $db->prepare(
+                    "INSERT INTO macros (recipe_id, calories, protein_g, carbs_g, fat_g, fiber_g, math_calculations)
+                     VALUES (:recipe_id, :calories, :protein_g, :carbs_g, :fat_g, :fiber_g, :math_calculations)"
+                );
+                $insMacros->execute([
+                    ':recipe_id' => $recipeId,
+                    ':calories' => $parsed['macros']['calories'],
+                    ':protein_g' => $parsed['macros']['protein_g'],
+                    ':carbs_g' => $parsed['macros']['carbs_g'],
+                    ':fat_g' => $parsed['macros']['fat_g'],
+                    ':fiber_g' => $parsed['macros']['fiber_g'],
+                    ':math_calculations' => $existingMath,
+                ]);
+            }
+
+            $delMicros = $db->prepare("DELETE FROM micros WHERE recipe_id = ?");
+            $delMicros->execute([$recipeId]);
+
+            if (!empty($parsed['micros'])) {
+                $insMicros = $db->prepare(
+                    "INSERT INTO micros (recipe_id, nutrient_name, amount, unit, daily_value_percentage, math_calculations)
+                     VALUES (:recipe_id, :nutrient_name, :amount, :unit, :daily_value_percentage, :math_calculations)"
+                );
+                foreach ($parsed['micros'] as $micro) {
+                    $insMicros->execute([
+                        ':recipe_id' => $recipeId,
+                        ':nutrient_name' => $micro['nutrient_name'],
+                        ':amount' => $micro['amount'],
+                        ':unit' => $micro['unit'],
+                        ':daily_value_percentage' => $micro['daily_value_percentage'],
+                        ':math_calculations' => '',
+                    ]);
+                }
+            }
+        }
+    }
+
+    /**
+     * Admin endpoint (POST /recipes): creates a recipe and its relational tables.
+     */
+    public function createRecipe() {
+        $adminUserId = $this->requireAdmin();
+        $db = $this->db;
+        $db->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+
+        $data = json_decode(file_get_contents("php://input"), true);
+        if (!is_array($data)) {
+            $data = [];
+        }
+
+        $title = trim((string)($data['title'] ?? ''));
+        if ($title === '') {
             http_response_code(400);
-            echo json_encode(["message" => "Invalid or Missing ID"]);
+            echo json_encode(["success" => false, "message" => "Recipe title is required."]);
             return;
         }
 
-        $id = (int)$_GET['id'];
-        $db = Database::connect();
-        $data = json_decode(file_get_contents("php://input"), true);
+        $imageUrl = trim((string)($data['imageUrl'] ?? $data['image_url'] ?? ''));
+        $imageSource = ($imageUrl !== '' && !str_contains($imageUrl, 'default-veggie-vault-placeholder'))
+            ? 'user'
+            : 'none';
+        $isPublic = array_key_exists('isPublic', $data)
+            ? (int)(bool)$data['isPublic']
+            : (array_key_exists('isDraft', $data) ? ($data['isDraft'] ? 0 : 1) : 1);
 
-        // A massive UPDATE statement to overwrite the old data AND our new columns
-        $sql = "UPDATE recipes SET 
-                title = :title, 
-                description = :description, 
-                ingredients = :ingredients, 
-                instructions = :instructions, 
-                prep_time = :prep_time, 
-                cook_time = :cook_time, 
-                nutrition_info = :nutrition_info, 
-                notes = :notes,
-                yields = :yields,
-                image_url = :image_url,
-                is_public = :is_public,
-                image_source = :image_source
-                WHERE id = :id";
-        
-        $stmt = $db->prepare($sql);
-        $success = $stmt->execute([
-            ':title' => $data['title'] ?? '',
-            ':description' => $data['description'] ?? '',
-            ':ingredients' => json_encode($data['ingredients'] ?? []),
-            ':instructions' => json_encode($data['instructions'] ?? []),
-            ':prep_time' => $data['prepTime'] ?? 0,
-            ':cook_time' => $data['cookTime'] ?? 0,
-            ':nutrition_info' => json_encode($data['nutritionInfo'] ?? []),
-            ':notes' => $data['notes'] ?? '',
-            ':yields' => $data['yields'] ?? '',
-            ':image_url' => $data['imageUrl'] ?? '',
-            ':is_public' => $data['isPublic'] ?? 0,
-            ':image_source' => $data['imageSource'] ?? 'none',
-            ':id' => $id
-        ]);
+        try {
+            $db->beginTransaction();
 
-        if ($success) {
-            echo json_encode(["success" => true, "message" => "Recipe successfully updated!"]);
-        } else {
+            $stmt = $db->prepare(
+                "INSERT INTO recipes (user_id, title, description, notes, image_url, yields, prep_time_mins, cook_time_mins, is_wfpb, is_oil_free, is_gluten_free, is_sugar_free, is_public, image_source)
+                 VALUES (:user_id, :title, :description, :notes, :image_url, :yields, :prep_time_mins, :cook_time_mins, 1, :is_oil_free, :is_gluten_free, :is_sugar_free, :is_public, :image_source)"
+            );
+            $stmt->execute([
+                ':user_id' => $adminUserId > 0 ? $adminUserId : null,
+                ':title' => $title,
+                ':description' => trim((string)($data['description'] ?? '')),
+                ':notes' => trim((string)($data['notes'] ?? '')),
+                ':image_url' => $imageUrl,
+                ':yields' => substr(trim((string)($data['yields'] ?? '')), 0, 255),
+                ':prep_time_mins' => max(0, (int)($data['prepTime'] ?? 0)),
+                ':cook_time_mins' => max(0, (int)($data['cookTime'] ?? 0)),
+                ':is_oil_free' => array_key_exists('isOilFree', $data) ? (int)(bool)$data['isOilFree'] : 1,
+                ':is_gluten_free' => array_key_exists('isGlutenFree', $data) ? (int)(bool)$data['isGlutenFree'] : 0,
+                ':is_sugar_free' => array_key_exists('isSugarFree', $data) ? (int)(bool)$data['isSugarFree'] : 1,
+                ':is_public' => $isPublic,
+                ':image_source' => $imageSource,
+            ]);
+
+            $recipeId = (int)$db->lastInsertId();
+            $this->replaceRecipeRelations($db, $recipeId, $data);
+
+            $db->commit();
+            echo json_encode([
+                "success" => true,
+                "id" => $recipeId,
+                "message" => "Recipe vaulted successfully!",
+            ]);
+        } catch (\Exception $e) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
             http_response_code(500);
-            echo json_encode(["success" => false, "message" => "Failed to update the recipe."]);
+            echo json_encode(["success" => false, "message" => "Failed to create recipe: " . $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Admin endpoint (POST /upload): stores uploaded recipe images under /public/images/.
+     */
+    public function uploadImages() {
+        $this->requireAdmin();
+
+        if (empty($_FILES['images'])) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "No images were uploaded."]);
+            return;
+        }
+
+        $files = $_FILES['images'];
+        $names = is_array($files['name']) ? $files['name'] : [$files['name']];
+        $tmpNames = is_array($files['tmp_name']) ? $files['tmp_name'] : [$files['tmp_name']];
+        $errors = is_array($files['error']) ? $files['error'] : [$files['error']];
+        $sizes = is_array($files['size']) ? $files['size'] : [$files['size']];
+
+        $uploadDir = __DIR__ . '/../../public/images/';
+        if (!is_dir($uploadDir)) {
+            mkdir($uploadDir, 0755, true);
+        }
+
+        $allowedExts = ['jpg', 'jpeg', 'png', 'webp', 'gif'];
+        $uploadedUrls = [];
+
+        foreach ($names as $idx => $origName) {
+            if (($errors[$idx] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+                continue;
+            }
+            if (($sizes[$idx] ?? 0) > 10 * 1024 * 1024) {
+                continue;
+            }
+            $tmp = $tmpNames[$idx] ?? '';
+            if ($tmp === '' || @getimagesize($tmp) === false) {
+                continue;
+            }
+
+            $ext = strtolower(pathinfo((string)$origName, PATHINFO_EXTENSION));
+            if (!in_array($ext, $allowedExts, true)) {
+                $ext = 'jpg';
+            }
+
+            $filename = time() . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
+            if (@move_uploaded_file($tmp, $uploadDir . $filename)) {
+                $uploadedUrls[] = '/images/' . $filename;
+            }
+        }
+
+        if (empty($uploadedUrls)) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "No valid images could be saved."]);
+            return;
+        }
+
+        echo json_encode([
+            "success" => true,
+            "urls" => $uploadedUrls,
+        ]);
+    }
+
+    /*
+     * Update an existing recipe and its relational ingredients, instructions, macros, and micros.
+     */
+    public function updateRecipe() {
+        $this->requireAdmin();
+
+        $db = $this->db;
+        $db->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+
+        $data = json_decode(file_get_contents("php://input"), true);
+        if (!is_array($data)) {
+            $data = [];
+        }
+
+        $rawId = $_GET['id'] ?? ($data['id'] ?? null);
+        if ($rawId === null || !is_numeric($rawId) || (int)$rawId <= 0) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Invalid or Missing ID"]);
+            return;
+        }
+
+        $id = (int)$rawId;
+
+        $existingStmt = $db->prepare("SELECT * FROM recipes WHERE id = ? LIMIT 1");
+        $existingStmt->execute([$id]);
+        $existing = $existingStmt->fetch(\PDO::FETCH_ASSOC);
+
+        if (!$existing) {
+            http_response_code(404);
+            echo json_encode(["success" => false, "message" => "Recipe not found."]);
+            return;
+        }
+
+        $title = trim((string)($data['title'] ?? $existing['title'] ?? ''));
+        if ($title === '') {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Recipe title cannot be empty."]);
+            return;
+        }
+
+        if (array_key_exists('isPublic', $data)) {
+            $isPublic = (int)(bool)$data['isPublic'];
+        } elseif (array_key_exists('is_public', $data)) {
+            $isPublic = (int)(bool)$data['is_public'];
+        } elseif (array_key_exists('isDraft', $data)) {
+            $isPublic = $data['isDraft'] ? 0 : 1;
+        } else {
+            $isPublic = (int)$existing['is_public'];
+        }
+
+        $imageUrl = array_key_exists('imageUrl', $data)
+            ? trim((string)$data['imageUrl'])
+            : (string)($existing['image_url'] ?? '');
+
+        $imageSource = (string)($data['imageSource'] ?? $data['image_source'] ?? $existing['image_source'] ?? 'none');
+        if (!in_array($imageSource, ['ai', 'user', 'none'], true)) {
+            $imageSource = 'none';
+        }
+        if ($imageUrl === '' || str_contains($imageUrl, 'default-veggie-vault-placeholder')) {
+            $imageSource = 'none';
+        } elseif ($imageSource === 'none') {
+            $imageSource = 'user';
+        }
+
+        $prepTime = array_key_exists('prepTime', $data)
+            ? max(0, (int)$data['prepTime'])
+            : (int)($existing['prep_time_mins'] ?? 0);
+        $cookTime = array_key_exists('cookTime', $data)
+            ? max(0, (int)$data['cookTime'])
+            : (int)($existing['cook_time_mins'] ?? 0);
+
+        $isOilFree = array_key_exists('isOilFree', $data)
+            ? (int)(bool)$data['isOilFree']
+            : (int)($existing['is_oil_free'] ?? 1);
+        $isGlutenFree = array_key_exists('isGlutenFree', $data)
+            ? (int)(bool)$data['isGlutenFree']
+            : (int)($existing['is_gluten_free'] ?? 0);
+        $isSugarFree = array_key_exists('isSugarFree', $data)
+            ? (int)(bool)$data['isSugarFree']
+            : (int)($existing['is_sugar_free'] ?? 1);
+
+        try {
+            $db->beginTransaction();
+
+            $sql = "UPDATE recipes SET
+                    title = :title,
+                    description = :description,
+                    yields = :yields,
+                    prep_time_mins = :prep_time_mins,
+                    cook_time_mins = :cook_time_mins,
+                    notes = :notes,
+                    image_url = :image_url,
+                    is_public = :is_public,
+                    image_source = :image_source,
+                    is_oil_free = :is_oil_free,
+                    is_gluten_free = :is_gluten_free,
+                    is_sugar_free = :is_sugar_free
+                    WHERE id = :id";
+
+            $stmt = $db->prepare($sql);
+            $stmt->execute([
+                ':title' => $title,
+                ':description' => array_key_exists('description', $data) ? (string)$data['description'] : (string)($existing['description'] ?? ''),
+                ':yields' => substr(array_key_exists('yields', $data) ? trim((string)$data['yields']) : (string)($existing['yields'] ?? ''), 0, 255),
+                ':prep_time_mins' => $prepTime,
+                ':cook_time_mins' => $cookTime,
+                ':notes' => array_key_exists('notes', $data) ? (string)$data['notes'] : (string)($existing['notes'] ?? ''),
+                ':image_url' => $imageUrl,
+                ':is_public' => $isPublic,
+                ':image_source' => $imageSource,
+                ':is_oil_free' => $isOilFree,
+                ':is_gluten_free' => $isGlutenFree,
+                ':is_sugar_free' => $isSugarFree,
+                ':id' => $id,
+            ]);
+
+            $this->replaceRecipeRelations($db, $id, $data);
+
+            $db->commit();
+            echo json_encode(["success" => true, "message" => "Recipe successfully updated!"]);
+        } catch (\Exception $e) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            http_response_code(500);
+            echo json_encode(["success" => false, "message" => "Failed to update the recipe: " . $e->getMessage()]);
         }
     }
     public function deleteRecipe() {
