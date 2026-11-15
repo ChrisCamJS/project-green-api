@@ -42,6 +42,7 @@ $router->add('POST', '/recipes/publish-draft', 'RecipeController', 'publishDraft
 // USER PROFILES & FOLLOWING
 $router->add('GET', '/users/profile', 'ProfileController', 'getProfile');
 $router->add('PUT', '/users/profile', 'ProfileController', 'updateProfile');
+$router->add('PUT', '/users/wellness', 'ProfileController', 'updateWellness');
 $router->add('PUT', '/users/email', 'ProfileController', 'updateEmail');
 $router->add('PUT', '/users/password', 'ProfileController', 'updatePassword');
 $router->add('POST', '/users/follow', 'ProfileController', 'toggleFollow');

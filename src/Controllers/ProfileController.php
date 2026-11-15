@@ -27,6 +27,23 @@ class ProfileController {
             'dietary_focus' => "ALTER TABLE users ADD COLUMN dietary_focus VARCHAR(120) DEFAULT NULL",
             'website_url' => "ALTER TABLE users ADD COLUMN website_url VARCHAR(255) DEFAULT NULL",
             'pronouns' => "ALTER TABLE users ADD COLUMN pronouns VARCHAR(50) DEFAULT NULL",
+            'height_ft' => "ALTER TABLE users ADD COLUMN height_ft INT NULL DEFAULT NULL",
+            'height_in' => "ALTER TABLE users ADD COLUMN height_in DECIMAL(4,1) NULL DEFAULT NULL",
+            'weight_lbs' => "ALTER TABLE users ADD COLUMN weight_lbs DECIMAL(5,1) NULL DEFAULT NULL",
+            'age' => "ALTER TABLE users ADD COLUMN age INT NULL DEFAULT NULL",
+            'gender' => "ALTER TABLE users ADD COLUMN gender VARCHAR(16) NULL DEFAULT NULL",
+            'activity_level' => "ALTER TABLE users ADD COLUMN activity_level VARCHAR(32) NULL DEFAULT NULL",
+            'bmi' => "ALTER TABLE users ADD COLUMN bmi DECIMAL(4,1) NULL DEFAULT NULL",
+            'bmr' => "ALTER TABLE users ADD COLUMN bmr INT NULL DEFAULT NULL",
+            'tdee' => "ALTER TABLE users ADD COLUMN tdee INT NULL DEFAULT NULL",
+            'calorie_target' => "ALTER TABLE users ADD COLUMN calorie_target INT NULL DEFAULT NULL",
+            'macro_plan' => "ALTER TABLE users ADD COLUMN macro_plan VARCHAR(32) NULL DEFAULT NULL",
+            'custom_protein_pct' => "ALTER TABLE users ADD COLUMN custom_protein_pct INT NULL DEFAULT NULL",
+            'custom_carbs_pct' => "ALTER TABLE users ADD COLUMN custom_carbs_pct INT NULL DEFAULT NULL",
+            'custom_fat_pct' => "ALTER TABLE users ADD COLUMN custom_fat_pct INT NULL DEFAULT NULL",
+            'protein_target_g' => "ALTER TABLE users ADD COLUMN protein_target_g INT NULL DEFAULT NULL",
+            'carbs_target_g' => "ALTER TABLE users ADD COLUMN carbs_target_g INT NULL DEFAULT NULL",
+            'fat_target_g' => "ALTER TABLE users ADD COLUMN fat_target_g INT NULL DEFAULT NULL",
         ];
 
         foreach ($columnsToAdd as $col => $sql) {
@@ -100,19 +117,28 @@ class ProfileController {
             }
             $lookupSql = "SELECT id, username, email, display_name, location, bio, profile_image,
                                  favorite_cuisine, dietary_focus, website_url, pronouns,
-                                 account_tier, generation_tokens, is_admin, created_at
+                                 account_tier, generation_tokens, is_admin, created_at,
+                                 height_ft, height_in, weight_lbs, age, gender, activity_level, bmi, bmr, tdee,
+                                 calorie_target, macro_plan, custom_protein_pct, custom_carbs_pct, custom_fat_pct,
+                                 protein_target_g, carbs_target_g, fat_target_g
                           FROM users WHERE id = :val LIMIT 1";
             $lookupVal = $currentUserId;
         } elseif (ctype_digit($identifier)) {
             $lookupSql = "SELECT id, username, email, display_name, location, bio, profile_image,
                                  favorite_cuisine, dietary_focus, website_url, pronouns,
-                                 account_tier, generation_tokens, is_admin, created_at
+                                 account_tier, generation_tokens, is_admin, created_at,
+                                 height_ft, height_in, weight_lbs, age, gender, activity_level, bmi, bmr, tdee,
+                                 calorie_target, macro_plan, custom_protein_pct, custom_carbs_pct, custom_fat_pct,
+                                 protein_target_g, carbs_target_g, fat_target_g
                           FROM users WHERE id = :val LIMIT 1";
             $lookupVal = (int)$identifier;
         } else {
             $lookupSql = "SELECT id, username, email, display_name, location, bio, profile_image,
                                  favorite_cuisine, dietary_focus, website_url, pronouns,
-                                 account_tier, generation_tokens, is_admin, created_at
+                                 account_tier, generation_tokens, is_admin, created_at,
+                                 height_ft, height_in, weight_lbs, age, gender, activity_level, bmi, bmr, tdee,
+                                 calorie_target, macro_plan, custom_protein_pct, custom_carbs_pct, custom_fat_pct,
+                                 protein_target_g, carbs_target_g, fat_target_g
                           FROM users WHERE username = :val LIMIT 1";
             $lookupVal = $identifier;
         }
@@ -222,6 +248,23 @@ class ProfileController {
         if ($isOwnProfile) {
             $profileData['email'] = $user['email'];
             $profileData['generation_tokens'] = (float)$user['generation_tokens'];
+            $profileData['height_ft'] = $user['height_ft'] !== null ? (int)$user['height_ft'] : null;
+            $profileData['height_in'] = $user['height_in'] !== null ? (float)$user['height_in'] : null;
+            $profileData['weight_lbs'] = $user['weight_lbs'] !== null ? (float)$user['weight_lbs'] : null;
+            $profileData['age'] = $user['age'] !== null ? (int)$user['age'] : null;
+            $profileData['gender'] = $user['gender'] ?? null;
+            $profileData['activity_level'] = $user['activity_level'] ?? null;
+            $profileData['bmi'] = $user['bmi'] !== null ? (float)$user['bmi'] : null;
+            $profileData['bmr'] = $user['bmr'] !== null ? (int)$user['bmr'] : null;
+            $profileData['tdee'] = $user['tdee'] !== null ? (int)$user['tdee'] : null;
+            $profileData['calorie_target'] = $user['calorie_target'] !== null ? (int)$user['calorie_target'] : null;
+            $profileData['macro_plan'] = $user['macro_plan'] ?? null;
+            $profileData['custom_protein_pct'] = $user['custom_protein_pct'] !== null ? (int)$user['custom_protein_pct'] : null;
+            $profileData['custom_carbs_pct'] = $user['custom_carbs_pct'] !== null ? (int)$user['custom_carbs_pct'] : null;
+            $profileData['custom_fat_pct'] = $user['custom_fat_pct'] !== null ? (int)$user['custom_fat_pct'] : null;
+            $profileData['protein_target_g'] = $user['protein_target_g'] !== null ? (int)$user['protein_target_g'] : null;
+            $profileData['carbs_target_g'] = $user['carbs_target_g'] !== null ? (int)$user['carbs_target_g'] : null;
+            $profileData['fat_target_g'] = $user['fat_target_g'] !== null ? (int)$user['fat_target_g'] : null;
         }
 
         echo json_encode([
@@ -352,7 +395,10 @@ class ProfileController {
         $fetchStmt = $this->db->prepare("
             SELECT id, username, email, display_name, location, bio, profile_image,
                    favorite_cuisine, dietary_focus, website_url, pronouns,
-                   is_admin, account_tier, generation_tokens, created_at
+                   is_admin, account_tier, generation_tokens, created_at,
+                   height_ft, height_in, weight_lbs, age, gender, activity_level, bmi, bmr, tdee,
+                   calorie_target, macro_plan, custom_protein_pct, custom_carbs_pct, custom_fat_pct,
+                   protein_target_g, carbs_target_g, fat_target_g
             FROM users WHERE id = ? LIMIT 1
         ");
         $fetchStmt->execute([$userId]);
@@ -361,6 +407,75 @@ class ProfileController {
         echo json_encode([
             "success" => true,
             "message" => "Profile updated!",
+            "user" => $updatedUser
+        ]);
+    }
+
+    /**
+     * PUT /users/wellness
+     * Saves wellness calculations (BMI, TDEE, Calorie Target, Macros) to the user's profile.
+     */
+    public function updateWellness() {
+        $userId = $this->requireAuth();
+        $data = json_decode(file_get_contents("php://input"), true);
+        if (!is_array($data)) {
+            $data = [];
+        }
+
+        $fields = [
+            'height_ft' => isset($data['height_ft']) && $data['height_ft'] !== '' ? (int)$data['height_ft'] : null,
+            'height_in' => isset($data['height_in']) && $data['height_in'] !== '' ? (float)$data['height_in'] : null,
+            'weight_lbs' => isset($data['weight_lbs']) && $data['weight_lbs'] !== '' ? (float)$data['weight_lbs'] : null,
+            'age' => isset($data['age']) && $data['age'] !== '' ? (int)$data['age'] : null,
+            'gender' => isset($data['gender']) && $data['gender'] !== '' ? substr(trim((string)$data['gender']), 0, 16) : null,
+            'activity_level' => isset($data['activity_level']) && $data['activity_level'] !== '' ? substr(trim((string)$data['activity_level']), 0, 32) : null,
+            'bmi' => isset($data['bmi']) && $data['bmi'] !== '' ? (float)$data['bmi'] : null,
+            'bmr' => isset($data['bmr']) && $data['bmr'] !== '' ? (int)$data['bmr'] : null,
+            'tdee' => isset($data['tdee']) && $data['tdee'] !== '' ? (int)$data['tdee'] : null,
+            'calorie_target' => isset($data['calorie_target']) && $data['calorie_target'] !== '' ? (int)$data['calorie_target'] : null,
+            'macro_plan' => isset($data['macro_plan']) && $data['macro_plan'] !== '' ? substr(trim((string)$data['macro_plan']), 0, 32) : null,
+            'custom_protein_pct' => isset($data['custom_protein_pct']) && $data['custom_protein_pct'] !== '' ? (int)$data['custom_protein_pct'] : null,
+            'custom_carbs_pct' => isset($data['custom_carbs_pct']) && $data['custom_carbs_pct'] !== '' ? (int)$data['custom_carbs_pct'] : null,
+            'custom_fat_pct' => isset($data['custom_fat_pct']) && $data['custom_fat_pct'] !== '' ? (int)$data['custom_fat_pct'] : null,
+            'protein_target_g' => isset($data['protein_target_g']) && $data['protein_target_g'] !== '' ? (int)$data['protein_target_g'] : null,
+            'carbs_target_g' => isset($data['carbs_target_g']) && $data['carbs_target_g'] !== '' ? (int)$data['carbs_target_g'] : null,
+            'fat_target_g' => isset($data['fat_target_g']) && $data['fat_target_g'] !== '' ? (int)$data['fat_target_g'] : null,
+        ];
+
+        $setClauses = [];
+        $params = [':id' => $userId];
+        foreach ($fields as $key => $val) {
+            if (array_key_exists($key, $data)) {
+                $setClauses[] = "{$key} = :{$key}";
+                $params[":{$key}"] = $val;
+            }
+        }
+
+        if (empty($setClauses)) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "No wellness fields provided."]);
+            return;
+        }
+
+        $sql = "UPDATE users SET " . implode(', ', $setClauses) . " WHERE id = :id";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params);
+
+        $fetchStmt = $this->db->prepare("
+            SELECT id, username, email, display_name, location, bio, profile_image,
+                   favorite_cuisine, dietary_focus, website_url, pronouns,
+                   is_admin, account_tier, generation_tokens, created_at,
+                   height_ft, height_in, weight_lbs, age, gender, activity_level, bmi, bmr, tdee,
+                   calorie_target, macro_plan, custom_protein_pct, custom_carbs_pct, custom_fat_pct,
+                   protein_target_g, carbs_target_g, fat_target_g
+            FROM users WHERE id = ? LIMIT 1
+        ");
+        $fetchStmt->execute([$userId]);
+        $updatedUser = $fetchStmt->fetch(PDO::FETCH_ASSOC);
+
+        echo json_encode([
+            "success" => true,
+            "message" => "Wellness calculations saved to your profile!",
             "user" => $updatedUser
         ]);
     }
