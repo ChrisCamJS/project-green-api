@@ -83,7 +83,7 @@ public function getAllRecipes() {
                 $sql .= " WHERE r.is_public = 1";
             }
 
-            $sql .= " ORDER BY is_followed_author DESC, r.created_at DESC";
+            $sql .= " ORDER BY r.created_at DESC, r.id DESC";
                     
             $stmt = $db->prepare($sql);
             $stmt->execute([
