@@ -244,6 +244,7 @@ class ProfileController {
             'recipe_count' => count($formattedRecipes),
             'is_following' => $isFollowing,
             'is_own_profile' => $isOwnProfile,
+            'achievements' => AchievementController::syncAndFetch($this->db, $targetUserId),
         ];
 
         if ($isOwnProfile) {
@@ -596,7 +597,14 @@ class ProfileController {
         $data = json_decode(file_get_contents("php://input"), true) ?: [];
 
         $followedId = (int)($data['followed_id'] ?? 0);
+        $targetUsername = trim((string)($data['username'] ?? ''));
         $action = $data['action'] ?? null;
+
+        if ($followedId <= 0 && $targetUsername !== '') {
+            $lookup = $this->db->prepare("SELECT id FROM users WHERE username = ? LIMIT 1");
+            $lookup->execute([$targetUsername]);
+            $followedId = (int)$lookup->fetchColumn();
+        }
 
         if ($followedId <= 0) {
             http_response_code(400);

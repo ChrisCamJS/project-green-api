@@ -7,16 +7,60 @@ use PDO;
 
 class AuthController {
 
-    public function register() {
-        // Find and parse the .env file safely (project root is two levels up from src/Controllers)
-        $envPath = dirname(__DIR__, 2) . '/.env';
-        $beta_invite_code = null;
-        if (file_exists($envPath)) {
-            $env = @parse_ini_file($envPath);
-            if (is_array($env)) {
-                $beta_invite_code = $env['BETA_INVITE_CODE'] ?? null;
-            }
+    private function resolveFrontendBaseUrl(): string {
+        $env = \App\Database::loadEnv();
+        if (!empty($env['FRONTEND_URL'])) {
+            return rtrim($env['FRONTEND_URL'], '/');
         }
+        $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+        if ($origin && preg_match('#^https?://#i', $origin)) {
+            return rtrim($origin, '/');
+        }
+        return 'https://veggievault.chrisandemmashow.com';
+    }
+
+    private function sendVerificationEmail(string $email, string $username, string $token): array {
+        $baseUrl = $this->resolveFrontendBaseUrl();
+        $verifyLink = $baseUrl . '/verify-email?token=' . urlencode($token);
+        $isLocal = str_contains($baseUrl, 'localhost') || str_contains($baseUrl, '127.0.0.1');
+
+        $subject = "The Veggie Vault - Verify Your Email Address";
+        $message = "
+        <html>
+        <head><title>Verify Your Email</title></head>
+        <body style='font-family: Arial, sans-serif; color: #333;'>
+          <h2>Welcome to The Veggie Vault, " . htmlspecialchars($username) . "!</h2>
+          <p>Thanks for registering. Before you can enter the vault, please verify your email address by clicking the button below:</p>
+          <p>
+            <a href='" . htmlspecialchars($verifyLink) . "' style='padding: 12px 20px; background-color: #2e7d32; color: #fff; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: bold;'>
+              Verify My Email
+            </a>
+          </p>
+          <p style='margin-top: 16px; font-size: 13px; color: #666;'>Or copy and paste this link into your browser:<br>" . htmlspecialchars($verifyLink) . "</p>
+          <p>Cheers,<br>Emma &amp; The Veggie Vault</p>
+        </body>
+        </html>
+        ";
+
+        $headers  = "MIME-Version: 1.0\r\n";
+        $headers .= "Content-type: text/html; charset=UTF-8\r\n";
+        $headers .= "From: The Veggie Vault <noreply@vault.chrisandemmashow.com>\r\n";
+        $headers .= "Reply-To: noreply@vault.chrisandemmashow.com\r\n";
+        $headers .= "X-Mailer: PHP/" . phpversion();
+
+        $mailSent = @mail($email, $subject, $message, $headers);
+
+        return [
+            'sent' => (bool)$mailSent,
+            'verifyUrl' => $verifyLink,
+            'isLocal' => $isLocal,
+        ];
+    }
+
+    public function register() {
+        $env = \App\Database::loadEnv();
+        $beta_invite_code = $env['BETA_INVITE_CODE'] ?? null;
+        $requireInviteCode = !isset($env['REQUIRE_INVITE_CODE']) || strtolower((string)$env['REQUIRE_INVITE_CODE']) !== 'false';
 
         $db = \App\Database::connect();
         
@@ -34,7 +78,7 @@ class AuthController {
         $invite_code = trim($data['inviteCode'] ?? '');
 
         // 1. Check for missing fields
-        if (empty($email) || empty($username) || empty($password) || empty($invite_code)) {
+        if (empty($email) || empty($username) || empty($password) || ($requireInviteCode && empty($invite_code))) {
             http_response_code(400);
             echo json_encode(["success" => false, "message" => "Don't be lazy, mate. Fill in all the fields!"]);
             return;
@@ -59,16 +103,18 @@ class AuthController {
         }
 
         // 2. The Dynamic Bouncer Check (Database invite_codes table + optional .env fallback)
-        $codeSql = "SELECT id FROM invite_codes WHERE code = :code AND is_active = 1 LIMIT 1";
-        $codeStmt = $db->prepare($codeSql);
-        $codeStmt->execute([':code' => $invite_code]);
-        $validDbCode = (bool)$codeStmt->fetch();
-        $validEnvCode = ($beta_invite_code && hash_equals($beta_invite_code, $invite_code));
+        if ($requireInviteCode) {
+            $codeSql = "SELECT id FROM invite_codes WHERE code = :code AND is_active = 1 LIMIT 1";
+            $codeStmt = $db->prepare($codeSql);
+            $codeStmt->execute([':code' => $invite_code]);
+            $validDbCode = (bool)$codeStmt->fetch();
+            $validEnvCode = ($beta_invite_code && hash_equals($beta_invite_code, $invite_code));
 
-        if (!$validDbCode && !$validEnvCode) {
-            http_response_code(403);
-            echo json_encode(["success" => false, "message" => "Access denied. That invite code is either invalid, expired, or totally made up."]);
-            return;
+            if (!$validDbCode && !$validEnvCode) {
+                http_response_code(403);
+                echo json_encode(["success" => false, "message" => "Access denied. That invite code is either invalid, expired, or totally made up."]);
+                return;
+            }
         }
 
         // 3. Check for existing mates (Email or Username)
@@ -82,49 +128,39 @@ class AuthController {
             return;
         }
 
-        // 4. Hash the password and insert the new user
+        // 4. Hash the password, generate verification token, and insert the new user (unverified until email confirmed)
         $password_hash = password_hash($password, PASSWORD_DEFAULT);
+        $verificationToken = bin2hex(random_bytes(32));
         
-        // Setting default tier to 'premium' and tokens to 10 for new beta testers
-        $insertSql = "INSERT INTO users (username, email, password_hash, account_tier, generation_tokens) VALUES (:username, :email, :hash, 'premium', 10)";
+        // Setting default tier to 'premium' and tokens to 10 for new testers
+        $insertSql = "INSERT INTO users (username, email, password_hash, account_tier, generation_tokens, is_verified, verification_token)
+                      VALUES (:username, :email, :hash, 'premium', 10, 0, :verification_token)";
         $insertStmt = $db->prepare($insertSql);
         
         $success = $insertStmt->execute([
             ':username' => $username,
             ':email' => $email,
-            ':hash' => $password_hash
+            ':hash' => $password_hash,
+            ':verification_token' => $verificationToken
         ]);
 
         if ($success) {
-            $newUserId = (int)$db->lastInsertId();
-            
-            // Instantly log the new mate in!
-            if (session_status() === PHP_SESSION_NONE) {
-                session_start();
-            }
-            
-            $_SESSION['user_id'] = $newUserId;
-            $_SESSION['username'] = $username;
-            $_SESSION['email'] = $email;
-            $_SESSION['is_admin'] = 0; // Default for new testers
-            $_SESSION['account_tier'] = 'premium';
-            $_SESSION['generation_tokens'] = 10;
-            
-            // Build the user array to match your login endpoint's output exactly
-            $user = [
-                'id' => $newUserId,
-                'username' => $username,
-                'email' => $email,
-                'is_admin' => 0,
-                'account_tier' => 'premium',
-                'generation_tokens' => 10
+            $emailResult = $this->sendVerificationEmail($email, $username, $verificationToken);
+
+            $response = [
+                "success" => true,
+                "requiresVerification" => true,
+                "email" => $email,
+                "message" => $emailResult['sent']
+                    ? "Account created! Please check your email and click the verification link to unlock your account."
+                    : "Account created! Email verification is required before logging in."
             ];
 
-            echo json_encode([
-                "success" => true, 
-                "message" => "Brilliant! You're on the list. Rolling out the red carpet...",
-                "user" => $user
-            ]);
+            if ($emailResult['isLocal'] && !$emailResult['sent']) {
+                $response['devVerificationUrl'] = $emailResult['verifyUrl'];
+            }
+
+            echo json_encode($response);
         } else {
             http_response_code(500);
             echo json_encode(["success" => false, "message" => "Something went horribly wrong in the database."]);
@@ -157,7 +193,7 @@ class AuthController {
         }
 
         // Updated query to check against the email column instead of username
-        $sql = "SELECT id, username, email, password_hash, is_admin, account_tier, generation_tokens,
+        $sql = "SELECT id, username, email, password_hash, is_admin, is_verified, account_tier, generation_tokens,
                        display_name, location, bio, profile_image, favorite_cuisine, dietary_focus, allergies, website_url, pronouns,
                        height_ft, height_in, weight_lbs, age, gender, activity_level, bmi, bmr, tdee,
                        calorie_target, macro_plan, custom_protein_pct, custom_carbs_pct, custom_fat_pct,
@@ -169,6 +205,16 @@ class AuthController {
 
         // verify the user exists and the password matches the hash
         if ($user && password_verify($password, $user['password_hash'])) {
+            if (isset($user['is_verified']) && (int)$user['is_verified'] === 0) {
+                http_response_code(403);
+                echo json_encode([
+                    "success" => false,
+                    "requiresVerification" => true,
+                    "email" => $user['email'],
+                    "message" => "Please verify your email address before logging in. Check your inbox (and spam folder) for the verification link."
+                ]);
+                return;
+            }
             // strip the hash before sending the data back to the front-end (safety first!)
             unset($user['password_hash']);
 
@@ -199,6 +245,98 @@ class AuthController {
         }
         session_destroy();
         echo json_encode(["success" => true, "message" => "Logged out successfully."]);
+    }
+
+    public function verifyEmail() {
+        $raw_input = file_get_contents("php://input");
+        $data = json_decode($raw_input, true) ?? [];
+        $token = trim((string)($data['token'] ?? $_GET['token'] ?? ''));
+
+        if (empty($token)) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Verification token is required."]);
+            return;
+        }
+
+        $db = \App\Database::connect();
+        $stmt = $db->prepare("
+            SELECT id, username, email, is_admin, account_tier, generation_tokens,
+                   display_name, location, bio, profile_image, favorite_cuisine, dietary_focus, allergies, website_url, pronouns,
+                   height_ft, height_in, weight_lbs, age, gender, activity_level, bmi, bmr, tdee,
+                   calorie_target, macro_plan, custom_protein_pct, custom_carbs_pct, custom_fat_pct,
+                   protein_target_g, carbs_target_g, fat_target_g
+            FROM users
+            WHERE verification_token = :token
+            LIMIT 1
+        ");
+        $stmt->execute([':token' => $token]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$user) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Invalid or already-used verification link."]);
+            return;
+        }
+
+        $upd = $db->prepare("UPDATE users SET is_verified = 1, verification_token = NULL WHERE id = :id");
+        $upd->execute([':id' => $user['id']]);
+        $user['is_verified'] = 1;
+
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+        $_SESSION['user_id'] = $user['id'];
+        $_SESSION['username'] = $user['username'];
+        $_SESSION['email'] = $user['email'];
+        $_SESSION['is_admin'] = $user['is_admin'];
+        $_SESSION['account_tier'] = $user['account_tier'];
+        $_SESSION['generation_tokens'] = $user['generation_tokens'];
+
+        echo json_encode([
+            "success" => true,
+            "message" => "Email verified! Welcome to The Veggie Vault.",
+            "user" => $user
+        ]);
+    }
+
+    public function resendVerification() {
+        $raw_input = file_get_contents("php://input");
+        $data = json_decode($raw_input, true) ?? [];
+        $email = trim((string)($data['email'] ?? ''));
+
+        if (empty($email) || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Please provide a valid email address."]);
+            return;
+        }
+
+        $db = \App\Database::connect();
+        $stmt = $db->prepare("SELECT id, username, email, is_verified, verification_token FROM users WHERE email = :email LIMIT 1");
+        $stmt->execute([':email' => $email]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$user || (int)$user['is_verified'] === 1) {
+            echo json_encode(["success" => true, "message" => "If an unverified account exists for that email, a new verification link has been sent."]);
+            return;
+        }
+
+        $token = $user['verification_token'] ?: bin2hex(random_bytes(32));
+        if (empty($user['verification_token'])) {
+            $db->prepare("UPDATE users SET verification_token = :t WHERE id = :id")->execute([':t' => $token, ':id' => $user['id']]);
+        }
+
+        $emailResult = $this->sendVerificationEmail($user['email'], $user['username'], $token);
+        $response = [
+            "success" => true,
+            "message" => $emailResult['sent']
+                ? "Verification email resent! Please check your inbox and spam folder."
+                : "Verification token refreshed."
+        ];
+        if ($emailResult['isLocal'] && !$emailResult['sent']) {
+            $response['devVerificationUrl'] = $emailResult['verifyUrl'];
+        }
+
+        echo json_encode($response);
     }
 
     public function requestPasswordReset() {

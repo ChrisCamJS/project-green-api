@@ -13,6 +13,8 @@ $router->add('GET', '/recipes/single', 'RecipeController', 'getRecipeById');
 // AUTHENTICATION & USERS
 $router->add('POST', '/login', 'AuthController', 'login');
 $router->add('POST', '/register', 'AuthController', 'register');
+$router->add('POST', '/verify-email', 'AuthController', 'verifyEmail');
+$router->add('POST', '/resend-verification', 'AuthController', 'resendVerification');
 $router->add('POST', '/logout', 'AuthController', 'logout');
 $router->add('POST', '/users/deduct-token', 'AuthController', 'deductToken');
 $router->add('GET', '/admin/invites', 'AdminController', 'getInviteCodes');
@@ -76,5 +78,11 @@ $router->add('DELETE', '/chats', 'ChatController', 'deleteChatSession');
 $router->add('GET', '/notifications', 'NotificationController', 'getNotifications');
 $router->add('PUT', '/notifications/read', 'NotificationController', 'markRead');
 $router->add('DELETE', '/notifications', 'NotificationController', 'deleteNotification');
+
+// FITNESS ACTIVITIES & ACHIEVEMENTS
+$router->add('GET', '/fitness-activities', 'FitnessController', 'getActivities');
+$router->add('POST', '/fitness-activities', 'FitnessController', 'addActivity');
+$router->add('DELETE', '/fitness-activities', 'FitnessController', 'deleteActivity');
+$router->add('GET', '/achievements', 'AchievementController', 'getMyAchievements');
 
 return $router;
