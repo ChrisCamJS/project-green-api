@@ -65,4 +65,9 @@ $router->add('POST', '/meal-plans', 'MealPlanController', 'addMealPlanEntry');
 $router->add('PUT', '/meal-plans', 'MealPlanController', 'updateMealPlanEntry');
 $router->add('DELETE', '/meal-plans', 'MealPlanController', 'deleteMealPlanEntry');
 
+// RECENT CHATS (30-DAY DATABASE STORAGE)
+$router->add('GET', '/chats', 'ChatController', 'getRecentChats');
+$router->add('POST', '/chats', 'ChatController', 'saveChatSession');
+$router->add('DELETE', '/chats', 'ChatController', 'deleteChatSession');
+
 return $router;
