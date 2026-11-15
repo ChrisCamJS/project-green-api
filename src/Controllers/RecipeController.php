@@ -1557,6 +1557,57 @@ public function getUserFavorites() {
                 ':body'        => $body,
                 ':image_url'   => $finalImageUrl
             ]);
+            $newCommentId = (int)$db->lastInsertId();
+
+            // Create notifications for recipe owner (and parent comment author if replying)
+            try {
+                $rStmt = $db->prepare("SELECT user_id, title FROM recipes WHERE id = :rid");
+                $rStmt->execute([':rid' => $recipeId]);
+                $recipeRow = $rStmt->fetch(\PDO::FETCH_ASSOC);
+
+                $recipeOwnerId = $recipeRow ? (int)$recipeRow['user_id'] : 0;
+                $recipeTitle = $recipeRow['title'] ?? 'your recipe';
+                $snippet = mb_substr(html_entity_decode($body, ENT_QUOTES, 'UTF-8'), 0, 80);
+                if (mb_strlen($body) > 80) {
+                    $snippet .= '…';
+                }
+
+                $notifStmt = $db->prepare("
+                    INSERT INTO notifications (user_id, actor_user_id, actor_username, recipe_id, comment_id, type, message)
+                    VALUES (:uid, :actor_id, :actor_name, :rid, :cid, :type, :msg)
+                ");
+
+                if ($recipeOwnerId > 0 && $recipeOwnerId !== (int)$userId) {
+                    $notifStmt->execute([
+                        ':uid' => $recipeOwnerId,
+                        ':actor_id' => (int)$userId,
+                        ':actor_name' => $authorName,
+                        ':rid' => (int)$recipeId,
+                        ':cid' => $newCommentId,
+                        ':type' => 'recipe_comment',
+                        ':msg' => "{$authorName} commented on \"{$recipeTitle}\": \"{$snippet}\""
+                    ]);
+                }
+
+                if (!empty($parentId)) {
+                    $pStmt = $db->prepare("SELECT user_id FROM recipe_comments WHERE id = :pid");
+                    $pStmt->execute([':pid' => (int)$parentId]);
+                    $parentOwnerId = (int)$pStmt->fetchColumn();
+                    if ($parentOwnerId > 0 && $parentOwnerId !== (int)$userId && $parentOwnerId !== $recipeOwnerId) {
+                        $notifStmt->execute([
+                            ':uid' => $parentOwnerId,
+                            ':actor_id' => (int)$userId,
+                            ':actor_name' => $authorName,
+                            ':rid' => (int)$recipeId,
+                            ':cid' => $newCommentId,
+                            ':type' => 'comment_reply',
+                            ':msg' => "{$authorName} replied to your comment on \"{$recipeTitle}\": \"{$snippet}\""
+                        ]);
+                    }
+                }
+            } catch (\Exception $notifErr) {
+                // Never fail comment posting if notifications fail
+            }
             
             echo json_encode(["success" => true, "message" => "Comment vaulted!"]);
         } catch (\Exception $e) {

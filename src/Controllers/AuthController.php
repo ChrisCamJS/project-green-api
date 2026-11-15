@@ -158,7 +158,7 @@ class AuthController {
 
         // Updated query to check against the email column instead of username
         $sql = "SELECT id, username, email, password_hash, is_admin, account_tier, generation_tokens,
-                       display_name, location, bio, profile_image, favorite_cuisine, dietary_focus, website_url, pronouns,
+                       display_name, location, bio, profile_image, favorite_cuisine, dietary_focus, allergies, website_url, pronouns,
                        height_ft, height_in, weight_lbs, age, gender, activity_level, bmi, bmr, tdee,
                        calorie_target, macro_plan, custom_protein_pct, custom_carbs_pct, custom_fat_pct,
                        protein_target_g, carbs_target_g, fat_target_g

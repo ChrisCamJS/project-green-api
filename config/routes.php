@@ -18,6 +18,8 @@ $router->add('POST', '/users/deduct-token', 'AuthController', 'deductToken');
 $router->add('GET', '/admin/invites', 'AdminController', 'getInviteCodes');
 $router->add('POST', '/admin/invites', 'AdminController', 'generateInviteCode');
 $router->add('PUT', '/admin/invites/toggle', 'AdminController', 'toggleInviteCode');
+$router->add('GET', '/admin/recipes', 'AdminController', 'getAdminRecipes');
+$router->add('PUT', '/admin/recipes', 'AdminController', 'updateAdminRecipes');
 $router->add('POST', '/users/request-reset', 'AuthController', 'requestPasswordReset');
 $router->add('POST', '/users/reset-password', 'AuthController', 'resetPassword');
 
@@ -69,5 +71,10 @@ $router->add('DELETE', '/meal-plans', 'MealPlanController', 'deleteMealPlanEntry
 $router->add('GET', '/chats', 'ChatController', 'getRecentChats');
 $router->add('POST', '/chats', 'ChatController', 'saveChatSession');
 $router->add('DELETE', '/chats', 'ChatController', 'deleteChatSession');
+
+// NOTIFICATIONS
+$router->add('GET', '/notifications', 'NotificationController', 'getNotifications');
+$router->add('PUT', '/notifications/read', 'NotificationController', 'markRead');
+$router->add('DELETE', '/notifications', 'NotificationController', 'deleteNotification');
 
 return $router;

@@ -25,6 +25,7 @@ class ProfileController {
             'profile_image' => "ALTER TABLE users ADD COLUMN profile_image VARCHAR(255) DEFAULT NULL",
             'favorite_cuisine' => "ALTER TABLE users ADD COLUMN favorite_cuisine VARCHAR(120) DEFAULT NULL",
             'dietary_focus' => "ALTER TABLE users ADD COLUMN dietary_focus VARCHAR(120) DEFAULT NULL",
+            'allergies' => "ALTER TABLE users ADD COLUMN allergies TEXT NULL DEFAULT NULL",
             'website_url' => "ALTER TABLE users ADD COLUMN website_url VARCHAR(255) DEFAULT NULL",
             'pronouns' => "ALTER TABLE users ADD COLUMN pronouns VARCHAR(50) DEFAULT NULL",
             'height_ft' => "ALTER TABLE users ADD COLUMN height_ft INT NULL DEFAULT NULL",
@@ -116,7 +117,7 @@ class ProfileController {
                 return;
             }
             $lookupSql = "SELECT id, username, email, display_name, location, bio, profile_image,
-                                 favorite_cuisine, dietary_focus, website_url, pronouns,
+                                 favorite_cuisine, dietary_focus, allergies, website_url, pronouns,
                                  account_tier, generation_tokens, is_admin, created_at,
                                  height_ft, height_in, weight_lbs, age, gender, activity_level, bmi, bmr, tdee,
                                  calorie_target, macro_plan, custom_protein_pct, custom_carbs_pct, custom_fat_pct,
@@ -125,7 +126,7 @@ class ProfileController {
             $lookupVal = $currentUserId;
         } elseif (ctype_digit($identifier)) {
             $lookupSql = "SELECT id, username, email, display_name, location, bio, profile_image,
-                                 favorite_cuisine, dietary_focus, website_url, pronouns,
+                                 favorite_cuisine, dietary_focus, allergies, website_url, pronouns,
                                  account_tier, generation_tokens, is_admin, created_at,
                                  height_ft, height_in, weight_lbs, age, gender, activity_level, bmi, bmr, tdee,
                                  calorie_target, macro_plan, custom_protein_pct, custom_carbs_pct, custom_fat_pct,
@@ -134,7 +135,7 @@ class ProfileController {
             $lookupVal = (int)$identifier;
         } else {
             $lookupSql = "SELECT id, username, email, display_name, location, bio, profile_image,
-                                 favorite_cuisine, dietary_focus, website_url, pronouns,
+                                 favorite_cuisine, dietary_focus, allergies, website_url, pronouns,
                                  account_tier, generation_tokens, is_admin, created_at,
                                  height_ft, height_in, weight_lbs, age, gender, activity_level, bmi, bmr, tdee,
                                  calorie_target, macro_plan, custom_protein_pct, custom_carbs_pct, custom_fat_pct,
@@ -248,6 +249,7 @@ class ProfileController {
         if ($isOwnProfile) {
             $profileData['email'] = $user['email'];
             $profileData['generation_tokens'] = (float)$user['generation_tokens'];
+            $profileData['allergies'] = $user['allergies'] ?? null;
             $profileData['height_ft'] = $user['height_ft'] !== null ? (int)$user['height_ft'] : null;
             $profileData['height_in'] = $user['height_in'] !== null ? (float)$user['height_in'] : null;
             $profileData['weight_lbs'] = $user['weight_lbs'] !== null ? (float)$user['weight_lbs'] : null;
@@ -306,6 +308,7 @@ class ProfileController {
         $bio = trim((string)($data['bio'] ?? ''));
         $favoriteCuisine = trim((string)($data['favorite_cuisine'] ?? ''));
         $dietaryFocus = trim((string)($data['dietary_focus'] ?? ''));
+        $allergies = trim((string)($data['allergies'] ?? ''));
         $websiteUrl = trim((string)($data['website_url'] ?? ''));
         $pronouns = trim((string)($data['pronouns'] ?? ''));
 
@@ -368,6 +371,7 @@ class ProfileController {
                 bio = :bio,
                 favorite_cuisine = :favorite_cuisine,
                 dietary_focus = :dietary_focus,
+                allergies = :allergies,
                 website_url = :website_url,
                 pronouns = :pronouns,
                 profile_image = :profile_image
@@ -380,6 +384,7 @@ class ProfileController {
             ':bio' => $bio !== '' ? $bio : null,
             ':favorite_cuisine' => $favoriteCuisine !== '' ? substr($favoriteCuisine, 0, 120) : null,
             ':dietary_focus' => $dietaryFocus !== '' ? substr($dietaryFocus, 0, 120) : null,
+            ':allergies' => $allergies !== '' ? $allergies : null,
             ':website_url' => $websiteUrl !== '' ? substr($websiteUrl, 0, 255) : null,
             ':pronouns' => $pronouns !== '' ? substr($pronouns, 0, 50) : null,
             ':profile_image' => $newProfileImage,
@@ -394,7 +399,7 @@ class ProfileController {
 
         $fetchStmt = $this->db->prepare("
             SELECT id, username, email, display_name, location, bio, profile_image,
-                   favorite_cuisine, dietary_focus, website_url, pronouns,
+                   favorite_cuisine, dietary_focus, allergies, website_url, pronouns,
                    is_admin, account_tier, generation_tokens, created_at,
                    height_ft, height_in, weight_lbs, age, gender, activity_level, bmi, bmr, tdee,
                    calorie_target, macro_plan, custom_protein_pct, custom_carbs_pct, custom_fat_pct,
@@ -463,7 +468,7 @@ class ProfileController {
 
         $fetchStmt = $this->db->prepare("
             SELECT id, username, email, display_name, location, bio, profile_image,
-                   favorite_cuisine, dietary_focus, website_url, pronouns,
+                   favorite_cuisine, dietary_focus, allergies, website_url, pronouns,
                    is_admin, account_tier, generation_tokens, created_at,
                    height_ft, height_in, weight_lbs, age, gender, activity_level, bmi, bmr, tdee,
                    calorie_target, macro_plan, custom_protein_pct, custom_carbs_pct, custom_fat_pct,
