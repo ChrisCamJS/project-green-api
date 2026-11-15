@@ -8,15 +8,30 @@ use PDO;
 class AuthController {
 
     private function resolveFrontendBaseUrl(): string {
+        $origin = rtrim((string)($_SERVER['HTTP_ORIGIN'] ?? ''), '/');
+        $host = strtolower((string)($_SERVER['HTTP_HOST'] ?? ''));
+        $isApiLocal = $host === '' || str_contains($host, 'localhost') || str_contains($host, '127.0.0.1');
+
+        // 1. Prefer a non-localhost browser origin (e.g. https://veggievault.chrisandemmashow.com)
+        if ($origin && preg_match('#^https?://#i', $origin)) {
+            $isOriginLocal = str_contains($origin, 'localhost') || str_contains($origin, '127.0.0.1');
+            if (!$isOriginLocal || $isApiLocal) {
+                return $origin;
+            }
+        }
+
+        // 2. Check .env FRONTEND_URL, but never emit localhost when running on a live server
         $env = \App\Database::loadEnv();
         if (!empty($env['FRONTEND_URL'])) {
-            return rtrim($env['FRONTEND_URL'], '/');
+            $envUrl = rtrim((string)$env['FRONTEND_URL'], '/');
+            $isEnvLocal = str_contains($envUrl, 'localhost') || str_contains($envUrl, '127.0.0.1');
+            if (!$isEnvLocal || $isApiLocal) {
+                return $envUrl;
+            }
         }
-        $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
-        if ($origin && preg_match('#^https?://#i', $origin)) {
-            return rtrim($origin, '/');
-        }
-        return 'https://veggievault.chrisandemmashow.com';
+
+        // 3. Safe production fallback
+        return $isApiLocal ? 'http://localhost:5173' : 'https://veggievault.chrisandemmashow.com';
     }
 
     private function sendVerificationEmail(string $email, string $username, string $token): array {
