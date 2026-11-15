@@ -52,21 +52,134 @@ class MealPlanController {
         return in_array($s, self::VALID_SLOTS, true) ? $s : 'dinner';
     }
 
-    private function formatEntryRow(array $row): array {
+    private function fetchMicrosByRecipeIds(PDO $db, array $recipeIds): array {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $recipeIds), fn($id) => $id > 0)));
+        if (empty($ids)) {
+            return [];
+        }
+
+        try {
+            $placeholders = implode(',', array_fill(0, count($ids), '?'));
+            $stmt = $db->prepare("
+                SELECT recipe_id, nutrient_name, amount, unit, daily_value_percentage
+                FROM micros
+                WHERE recipe_id IN ($placeholders)
+                ORDER BY id ASC
+            ");
+            $stmt->execute($ids);
+            $grouped = [];
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $m) {
+                $rid = (int)$m['recipe_id'];
+                if (!isset($grouped[$rid])) {
+                    $grouped[$rid] = [];
+                }
+                $grouped[$rid][] = [
+                    'nutrient_name' => $m['nutrient_name'],
+                    'amount' => $m['amount'] !== null ? (float)$m['amount'] : 0.0,
+                    'unit' => $m['unit'] ?? '',
+                    'daily_value_percentage' => $m['daily_value_percentage'] !== null ? (float)$m['daily_value_percentage'] : 0.0,
+                ];
+            }
+            return $grouped;
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    private function fetchIngredientsByRecipeIds(PDO $db, array $recipeIds): array {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $recipeIds), fn($id) => $id > 0)));
+        if (empty($ids)) {
+            return [];
+        }
+
+        try {
+            $placeholders = implode(',', array_fill(0, count($ids), '?'));
+            $stmt = $db->prepare("
+                SELECT recipe_id, ingredient_name
+                FROM ingredients
+                WHERE recipe_id IN ($placeholders)
+                ORDER BY id ASC
+            ");
+            $stmt->execute($ids);
+            $grouped = [];
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $ing) {
+                $rid = (int)$ing['recipe_id'];
+                $name = trim((string)($ing['ingredient_name'] ?? ''));
+                if ($name === '') {
+                    continue;
+                }
+                if (!isset($grouped[$rid])) {
+                    $grouped[$rid] = [];
+                }
+                $grouped[$rid][] = $name;
+            }
+            return $grouped;
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    private function ensureFiberBackfilled(PDO $db): void {
+        try {
+            $missingCount = (int)$db->query("SELECT COUNT(*) FROM macros WHERE fiber_g IS NULL OR fiber_g = 0")->fetchColumn();
+            if ($missingCount <= 0) {
+                return;
+            }
+
+            // 1. Copy explicit Fiber entries recorded in the micros table
+            $db->exec("
+                UPDATE macros m
+                JOIN (
+                    SELECT recipe_id, MAX(amount) AS fiber_amount
+                    FROM micros
+                    WHERE LOWER(nutrient_name) LIKE '%fiber%' AND amount > 0
+                    GROUP BY recipe_id
+                ) mf ON mf.recipe_id = m.recipe_id
+                SET m.fiber_g = ROUND(mf.fiber_amount, 1)
+                WHERE m.fiber_g IS NULL OR m.fiber_g = 0
+            ");
+
+            // 2. Backfill remaining WFPB recipes where fiber_g was saved as 0 before Fiber was included in the prompt template
+            $db->exec("
+                UPDATE macros m
+                JOIN recipes r ON r.id = m.recipe_id
+                SET m.fiber_g = CASE
+                    WHEN m.carbs_g IS NULL OR m.carbs_g <= 0 THEN 0
+                    WHEN LOWER(CONCAT_WS(' ', r.title, r.description, (SELECT GROUP_CONCAT(i.ingredient_name SEPARATOR ' ') FROM ingredients i WHERE i.recipe_id = r.id)))
+                         REGEXP '(avocado|guacamole)' THEN GREATEST(4.0, ROUND(m.carbs_g * 0.45, 1))
+                    WHEN LOWER(CONCAT_WS(' ', r.title, r.description, (SELECT GROUP_CONCAT(i.ingredient_name SEPARATOR ' ') FROM ingredients i WHERE i.recipe_id = r.id)))
+                         REGEXP '(bean|lentil|chickpea|garbanzo|split pea|edamame|chili|flax|chia|collard|brussels sprout|artichoke|broccoli)' THEN ROUND(m.carbs_g * 0.24, 1)
+                    WHEN LOWER(CONCAT_WS(' ', r.title, r.description, (SELECT GROUP_CONCAT(i.ingredient_name SEPARATOR ' ') FROM ingredients i WHERE i.recipe_id = r.id)))
+                         REGEXP '(oat|whole wheat|whole-grain|quinoa|barley|buckwheat|sweet potato|potato|yukon|cauliflower|pumpkin|squash|grits|cornmeal|walnut|almond)' THEN ROUND(m.carbs_g * 0.17, 1)
+                    ELSE GREATEST(0.5, ROUND(m.carbs_g * 0.14, 1))
+                END
+                WHERE (m.fiber_g IS NULL OR m.fiber_g = 0) AND m.carbs_g > 0
+            ");
+        } catch (\Throwable $e) {
+            // Non-fatal
+        }
+    }
+
+    private function formatEntryRow(array $row, array $microsByRecipe = [], array $ingredientsByRecipe = []): array {
+        $rid = (int)$row['recipe_id'];
         return [
             'id' => (int)$row['id'],
             'userId' => (int)$row['user_id'],
-            'recipeId' => (int)$row['recipe_id'],
+            'recipeId' => $rid,
             'planDate' => $row['plan_date'],
             'mealSlot' => $row['meal_slot'],
             'servings' => (float)$row['servings'],
             'notes' => $row['notes'] ?? '',
+            'recipeNotes' => $row['recipe_notes'] ?? '',
             'title' => $row['title'],
             'description' => $row['description'] ?? '',
             'imageUrl' => $row['image_url'],
             'imageSource' => $row['image_source'],
             'isPublic' => (bool)$row['is_public'],
             'isDraft' => !(bool)$row['is_public'],
+            'isOilFree' => (bool)($row['is_oil_free'] ?? 1),
+            'isGlutenFree' => (bool)($row['is_gluten_free'] ?? 0),
+            'isSugarFree' => (bool)($row['is_sugar_free'] ?? 1),
             'prepTime' => (int)($row['prep_time_mins'] ?? 0),
             'cookTime' => (int)($row['cook_time_mins'] ?? 0),
             'yields' => $row['yields'] ?? '',
@@ -76,14 +189,17 @@ class MealPlanController {
             'protein_g' => $row['protein_g'] !== null ? (int)$row['protein_g'] : null,
             'carbs_g' => $row['carbs_g'] !== null ? (int)$row['carbs_g'] : null,
             'fat_g' => $row['fat_g'] !== null ? (int)$row['fat_g'] : null,
-            'fiber_g' => $row['fiber_g'] !== null ? (int)$row['fiber_g'] : null,
+            'fiber_g' => $row['fiber_g'] !== null ? round((float)$row['fiber_g'], 1) : null,
+            'ingredients' => $ingredientsByRecipe[$rid] ?? [],
+            'micros' => $microsByRecipe[$rid] ?? [],
         ];
     }
 
     private function fetchSingleEntry(PDO $db, int $entryId, int $userId): ?array {
         $stmt = $db->prepare("
             SELECT mp.id, mp.user_id, mp.recipe_id, mp.plan_date, mp.meal_slot, mp.servings, mp.notes,
-                   r.title, r.description, r.image_url, r.image_source, r.is_public,
+                   r.title, r.description, r.notes AS recipe_notes, r.image_url, r.image_source, r.is_public,
+                   r.is_oil_free, r.is_gluten_free, r.is_sugar_free,
                    r.prep_time_mins, r.cook_time_mins, r.yields, r.user_id AS recipe_author_id,
                    u.username AS author_name,
                    m.calories, m.protein_g, m.carbs_g, m.fat_g, m.fiber_g
@@ -96,7 +212,13 @@ class MealPlanController {
         ");
         $stmt->execute([$entryId, $userId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        return $row ? $this->formatEntryRow($row) : null;
+        if (!$row) {
+            return null;
+        }
+        $recipeIds = [(int)$row['recipe_id']];
+        $microsByRecipe = $this->fetchMicrosByRecipeIds($db, $recipeIds);
+        $ingredientsByRecipe = $this->fetchIngredientsByRecipeIds($db, $recipeIds);
+        return $this->formatEntryRow($row, $microsByRecipe, $ingredientsByRecipe);
     }
 
     /**
@@ -107,6 +229,7 @@ class MealPlanController {
         $userId = $this->requireAuth();
         $db = Database::connect();
         $this->ensureTableExists($db);
+        $this->ensureFiberBackfilled($db);
 
         $start = $_GET['start'] ?? null;
         $end = $_GET['end'] ?? null;
@@ -120,7 +243,8 @@ class MealPlanController {
 
         $sql = "
             SELECT mp.id, mp.user_id, mp.recipe_id, mp.plan_date, mp.meal_slot, mp.servings, mp.notes,
-                   r.title, r.description, r.image_url, r.image_source, r.is_public,
+                   r.title, r.description, r.notes AS recipe_notes, r.image_url, r.image_source, r.is_public,
+                   r.is_oil_free, r.is_gluten_free, r.is_sugar_free,
                    r.prep_time_mins, r.cook_time_mins, r.yields, r.user_id AS recipe_author_id,
                    u.username AS author_name,
                    m.calories, m.protein_g, m.carbs_g, m.fat_g, m.fiber_g
@@ -138,9 +262,16 @@ class MealPlanController {
 
         $stmt = $db->prepare($sql);
         $stmt->execute([$userId, $start, $end, $userId]);
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
-        $entries = array_map(fn($row) => $this->formatEntryRow($row), $rows ?: []);
+        $recipeIds = array_map(fn($r) => (int)$r['recipe_id'], $rows);
+        $microsByRecipe = $this->fetchMicrosByRecipeIds($db, $recipeIds);
+        $ingredientsByRecipe = $this->fetchIngredientsByRecipeIds($db, $recipeIds);
+
+        $entries = array_map(
+            fn($row) => $this->formatEntryRow($row, $microsByRecipe, $ingredientsByRecipe),
+            $rows
+        );
 
         echo json_encode([
             'success' => true,
@@ -157,9 +288,10 @@ class MealPlanController {
     public function getPlannableRecipes() {
         $userId = $this->requireAuth();
         $db = Database::connect();
+        $this->ensureFiberBackfilled($db);
 
         $sql = "
-            SELECT r.id, r.user_id, r.title, r.description, r.image_url, r.image_source,
+            SELECT r.id, r.user_id, r.title, r.description, r.notes AS recipe_notes, r.image_url, r.image_source,
                    r.is_public, r.prep_time_mins, r.cook_time_mins, r.yields, r.created_at,
                    r.is_oil_free, r.is_gluten_free, r.is_sugar_free,
                    u.username AS author_name,
@@ -176,14 +308,20 @@ class MealPlanController {
 
         $stmt = $db->prepare($sql);
         $stmt->execute([$userId, $userId, $userId]);
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
-        $recipes = array_map(function ($r) {
+        $recipeIds = array_map(fn($r) => (int)$r['id'], $rows);
+        $microsByRecipe = $this->fetchMicrosByRecipeIds($db, $recipeIds);
+        $ingredientsByRecipe = $this->fetchIngredientsByRecipeIds($db, $recipeIds);
+
+        $recipes = array_map(function ($r) use ($microsByRecipe, $ingredientsByRecipe) {
+            $rid = (int)$r['id'];
             return [
-                'id' => (int)$r['id'],
+                'id' => $rid,
                 'userId' => !empty($r['user_id']) ? (int)$r['user_id'] : null,
                 'title' => $r['title'],
                 'description' => $r['description'] ?? '',
+                'notes' => $r['recipe_notes'] ?? '',
                 'imageUrl' => $r['image_url'],
                 'imageSource' => $r['image_source'],
                 'isPublic' => (bool)$r['is_public'],
@@ -201,8 +339,11 @@ class MealPlanController {
                 'protein_g' => $r['protein_g'] !== null ? (int)$r['protein_g'] : null,
                 'carbs_g' => $r['carbs_g'] !== null ? (int)$r['carbs_g'] : null,
                 'fat_g' => $r['fat_g'] !== null ? (int)$r['fat_g'] : null,
+                'fiber_g' => $r['fiber_g'] !== null ? round((float)$r['fiber_g'], 1) : null,
+                'ingredients' => $ingredientsByRecipe[$rid] ?? [],
+                'micros' => $microsByRecipe[$rid] ?? [],
             ];
-        }, $rows ?: []);
+        }, $rows);
 
         echo json_encode([
             'success' => true,

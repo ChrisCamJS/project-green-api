@@ -140,6 +140,48 @@ public function getAllRecipes() {
      */
 
     /**
+     * Auto-backfill fiber_g in macros when legacy rows have NULL/0 fiber despite carbohydrate & plant ingredients.
+     */
+    private function ensureFiberBackfilled(\PDO $db): void {
+        try {
+            $missingCount = (int)$db->query("SELECT COUNT(*) FROM macros WHERE fiber_g IS NULL OR fiber_g = 0")->fetchColumn();
+            if ($missingCount <= 0) {
+                return;
+            }
+
+            $db->exec("
+                UPDATE macros m
+                JOIN (
+                    SELECT recipe_id, MAX(amount) AS fiber_amount
+                    FROM micros
+                    WHERE LOWER(nutrient_name) LIKE '%fiber%' AND amount > 0
+                    GROUP BY recipe_id
+                ) mf ON mf.recipe_id = m.recipe_id
+                SET m.fiber_g = ROUND(mf.fiber_amount, 1)
+                WHERE m.fiber_g IS NULL OR m.fiber_g = 0
+            ");
+
+            $db->exec("
+                UPDATE macros m
+                JOIN recipes r ON r.id = m.recipe_id
+                SET m.fiber_g = CASE
+                    WHEN m.carbs_g IS NULL OR m.carbs_g <= 0 THEN 0
+                    WHEN LOWER(CONCAT_WS(' ', r.title, r.description, (SELECT GROUP_CONCAT(i.ingredient_name SEPARATOR ' ') FROM ingredients i WHERE i.recipe_id = r.id)))
+                         REGEXP '(avocado|guacamole)' THEN GREATEST(4.0, ROUND(m.carbs_g * 0.45, 1))
+                    WHEN LOWER(CONCAT_WS(' ', r.title, r.description, (SELECT GROUP_CONCAT(i.ingredient_name SEPARATOR ' ') FROM ingredients i WHERE i.recipe_id = r.id)))
+                         REGEXP '(bean|lentil|chickpea|garbanzo|split pea|edamame|chili|flax|chia|collard|brussels sprout|artichoke|broccoli)' THEN ROUND(m.carbs_g * 0.24, 1)
+                    WHEN LOWER(CONCAT_WS(' ', r.title, r.description, (SELECT GROUP_CONCAT(i.ingredient_name SEPARATOR ' ') FROM ingredients i WHERE i.recipe_id = r.id)))
+                         REGEXP '(oat|whole wheat|whole-grain|quinoa|barley|buckwheat|sweet potato|potato|yukon|cauliflower|pumpkin|squash|grits|cornmeal|walnut|almond)' THEN ROUND(m.carbs_g * 0.17, 1)
+                    ELSE GREATEST(0.5, ROUND(m.carbs_g * 0.14, 1))
+                END
+                WHERE (m.fiber_g IS NULL OR m.fiber_g = 0) AND m.carbs_g > 0
+            ");
+        } catch (\Throwable $e) {
+            // Non-fatal
+        }
+    }
+
+    /**
      * Fetch a single recipe with all its glorious relational data.
      * Upgraded to fetch the author's username!
      */
@@ -158,6 +200,7 @@ public function getAllRecipes() {
                 session_start();
             }
             $currentUserId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
+            $this->ensureFiberBackfilled($this->db);
 
             // 2. Fetch the overarching recipe details AND the author's username & profile metadata
             $sql = "SELECT r.*, u.username AS author_name,
