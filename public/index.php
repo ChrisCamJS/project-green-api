@@ -93,4 +93,19 @@ if (empty($uri) || $uri[0] !== '/') {
     $uri = '/' . $uri;
 }
 
+// Configure session cookie params so HTTPS cross-subdomain/cross-origin sessions persist reliably
+$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+    || (strtolower((string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https')
+    || ((int)($_SERVER['SERVER_PORT'] ?? 80) === 443);
+
+if (session_status() === PHP_SESSION_NONE) {
+    session_set_cookie_params([
+        'lifetime' => 604800,
+        'path' => '/',
+        'secure' => $isHttps,
+        'httponly' => true,
+        'samesite' => $isHttps ? 'None' : 'Lax',
+    ]);
+}
+
 $router->dispatch($uri, $_SERVER['REQUEST_METHOD']);
