@@ -288,6 +288,32 @@ class AuthController {
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if (!$user) {
+            if (session_status() === PHP_SESSION_NONE) {
+                session_start();
+            }
+            if (!empty($_SESSION['user_id'])) {
+                $sessStmt = $db->prepare("
+                    SELECT id, username, email, is_admin, is_verified, account_tier, generation_tokens,
+                           display_name, location, bio, profile_image, favorite_cuisine, dietary_focus, allergies, website_url, pronouns,
+                           height_ft, height_in, weight_lbs, age, gender, activity_level, bmi, bmr, tdee,
+                           calorie_target, macro_plan, custom_protein_pct, custom_carbs_pct, custom_fat_pct,
+                           protein_target_g, carbs_target_g, fat_target_g
+                    FROM users
+                    WHERE id = :id AND is_verified = 1
+                    LIMIT 1
+                ");
+                $sessStmt->execute([':id' => $_SESSION['user_id']]);
+                $verifiedUser = $sessStmt->fetch(PDO::FETCH_ASSOC);
+                if ($verifiedUser) {
+                    echo json_encode([
+                        "success" => true,
+                        "message" => "Email verified! Welcome to The Veggie Vault.",
+                        "user" => $verifiedUser
+                    ]);
+                    return;
+                }
+            }
+
             http_response_code(400);
             echo json_encode(["success" => false, "message" => "Invalid or already-used verification link."]);
             return;

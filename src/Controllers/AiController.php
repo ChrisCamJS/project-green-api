@@ -77,7 +77,18 @@ class AiController {
         $this->requireAuth();
         $apiKey = $this->getGeminiApiKey();
 
-        $input = json_decode(file_get_contents('php://input'), true) ?: [];
+        $rawInput = file_get_contents('php://input');
+        $contentLength = (int)($_SERVER['CONTENT_LENGTH'] ?? 0);
+        if (($rawInput === '' || $rawInput === false) && $contentLength > 0) {
+            http_response_code(413);
+            echo json_encode([
+                'success' => false,
+                'message' => 'Your message or attached image exceeds the server upload limit. Please try a smaller image.',
+            ]);
+            return;
+        }
+
+        $input = json_decode((string)$rawInput, true) ?: [];
         $contents = $input['contents'] ?? null;
         $systemInstruction = $input['systemInstruction'] ?? null;
 
