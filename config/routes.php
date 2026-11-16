@@ -56,6 +56,11 @@ $router->add('GET', '/users/following', 'ProfileController', 'getFollowing');
 $router->add('POST', '/upload', 'RecipeController', 'uploadImages');
 $router->add('POST', '/recipes/save-generated', 'RecipeController', 'saveGeneratedRecipe');
 
+// AI PROXY (KEEPS GEMINI API KEY SERVER-SIDE)
+$router->add('POST', '/ai/chat', 'AiController', 'chat');
+$router->add('POST', '/ai/image', 'AiController', 'generateImage');
+$router->add('POST', '/ai/live-token', 'AiController', 'createLiveToken');
+
 // PAYMENTS & TOKEN PURCHASES
 $router->add('GET', '/payments/config', 'PaymentController', 'getPaymentConfig');
 $router->add('POST', '/payments/create-checkout-session', 'PaymentController', 'createCheckoutSession');

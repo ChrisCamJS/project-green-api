@@ -81,13 +81,11 @@ class Database {
             try {
                  self::$pdo = new \PDO($dsn, $user, $pass, $options);
             } catch (\PDOException $e) {
+                 error_log("PDO Connection Failed ({$e->getCode()}): " . $e->getMessage());
                  http_response_code(500);
                  header('Content-Type: application/json');
                  echo json_encode([
-                     "error" => "PDO Connection Failed",
-                     "message" => $e->getMessage(),
-                     "code" => $e->getCode(),
-                     "dsn" => "mysql:host=$host;dbname=$db;charset=$charset"
+                     "error" => "Database connection failed. Please try again later."
                  ]);
                  exit;
             }

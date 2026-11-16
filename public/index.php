@@ -1,6 +1,8 @@
 <?php
 // public/index.php
-// $origin = $_SERVER['HTTP_ORIGIN'] ?? 'http://localhost:5173';
+// Suppress raw PHP error output in HTTP responses to prevent path/stack trace leaks
+ini_set('display_errors', '0');
+
 // ==============================================================================
 // 1. ORIGIN VALIDATION (THE BOUNCER)
 // ==============================================================================
@@ -9,6 +11,7 @@
 $allowedOrigins = [
     'https://veggievault.chrisandemmashow.com',
     'https://www.veggievault.chrisandemmashow.com',
+    'https://vault.chrisandemmashow.com',
     'http://localhost:5173'
 ];
 

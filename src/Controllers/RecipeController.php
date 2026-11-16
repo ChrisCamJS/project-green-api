@@ -301,17 +301,30 @@ public function getAllRecipes() {
 
         // 2. Handle the Image
         if (!empty($rawImageUrl) && strpos($rawImageUrl, 'data:image') === 0) {
-            list($type, $imageData) = explode(';', $rawImageUrl);
-            list(, $imageData)      = explode(',', $imageData);
-            $decodedData = base64_decode($imageData);
-            
-            $ext = 'jpg';
-            if (str_contains($type, 'png')) $ext = 'png';
-            if (str_contains($type, 'webp')) $ext = 'webp';
+            $parts = explode(';', $rawImageUrl, 2);
+            $dataParts = explode(',', $parts[1] ?? '', 2);
+            $decodedData = base64_decode($dataParts[1] ?? '', true);
+            $imgInfo = ($decodedData !== false && strlen($decodedData) <= 10 * 1024 * 1024)
+                ? @getimagesizefromstring($decodedData)
+                : false;
 
-            $filename = time() . '_ai_recipe_img.' . $ext;
+            $mimeToExt = [
+                'image/jpeg' => 'jpg',
+                'image/png' => 'png',
+                'image/webp' => 'webp',
+                'image/gif' => 'gif',
+            ];
+
+            if ($imgInfo === false || !isset($mimeToExt[$imgInfo['mime'] ?? ''])) {
+                http_response_code(400);
+                echo json_encode(["success" => false, "message" => "Invalid image data provided."]);
+                return;
+            }
+
+            $ext = $mimeToExt[$imgInfo['mime']];
+            $filename = time() . '_' . bin2hex(random_bytes(4)) . '_ai_recipe_img.' . $ext;
             $uploadDir = __DIR__ . '/../../public/images/';
-            
+
             if (!is_dir($uploadDir)) {
                 mkdir($uploadDir, 0755, true);
             }
@@ -747,14 +760,18 @@ public function getAllRecipes() {
                 continue;
             }
             $tmp = $tmpNames[$idx] ?? '';
-            if ($tmp === '' || @getimagesize($tmp) === false) {
+            $imgInfo = ($tmp !== '') ? @getimagesize($tmp) : false;
+            $mimeToExt = [
+                'image/jpeg' => 'jpg',
+                'image/png' => 'png',
+                'image/webp' => 'webp',
+                'image/gif' => 'gif',
+            ];
+            if ($imgInfo === false || !isset($mimeToExt[$imgInfo['mime'] ?? ''])) {
                 continue;
             }
 
-            $ext = strtolower(pathinfo((string)$origName, PATHINFO_EXTENSION));
-            if (!in_array($ext, $allowedExts, true)) {
-                $ext = 'jpg';
-            }
+            $ext = $mimeToExt[$imgInfo['mime']];
 
             $filename = time() . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
             if (@move_uploaded_file($tmp, $uploadDir . $filename)) {
@@ -1013,27 +1030,32 @@ public function getAllRecipes() {
 
         $recipe = $this->requireOwnedRecipe($recipeId, $userId);
 
-        $ext = 'jpg';
         $base64Body = $rawImage;
         if (strpos($rawImage, 'data:image') === 0) {
             $parts = explode(';', $rawImage, 2);
-            $type = $parts[0] ?? '';
             $dataParts = explode(',', $parts[1] ?? '', 2);
             $base64Body = $dataParts[1] ?? '';
-
-            if (str_contains($type, 'png')) $ext = 'png';
-            elseif (str_contains($type, 'webp')) $ext = 'webp';
         }
 
         $decodedData = base64_decode($base64Body, true);
-        if ($decodedData === false || empty($decodedData)) {
+        $imgInfo = ($decodedData !== false && !empty($decodedData) && strlen($decodedData) <= 10 * 1024 * 1024)
+            ? @getimagesizefromstring($decodedData)
+            : false;
+        $mimeToExt = [
+            'image/jpeg' => 'jpg',
+            'image/png' => 'png',
+            'image/webp' => 'webp',
+            'image/gif' => 'gif',
+        ];
+        if ($imgInfo === false || !isset($mimeToExt[$imgInfo['mime'] ?? ''])) {
             http_response_code(400);
             echo json_encode(["success" => false, "message" => "Invalid image data provided."]);
             return;
         }
 
+        $ext = $mimeToExt[$imgInfo['mime']];
         $prefix = $source === 'ai' ? 'ai_recipe_' : 'user_recipe_';
-        $filename = time() . '_' . $prefix . $recipeId . '.' . $ext;
+        $filename = time() . '_' . bin2hex(random_bytes(4)) . '_' . $prefix . $recipeId . '.' . $ext;
         $uploadDir = __DIR__ . '/../../public/images/';
 
         if (!is_dir($uploadDir)) {
