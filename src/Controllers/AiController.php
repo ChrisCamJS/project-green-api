@@ -32,9 +32,29 @@ class AiController {
         return $key;
     }
 
+    private function resolveCaBundlePath(): ?string {
+        $configured = trim((string)ini_get('curl.cainfo')) ?: trim((string)ini_get('openssl.cafile'));
+        if ($configured !== '' && is_file($configured)) {
+            return $configured;
+        }
+
+        $phpDir = dirname(PHP_BINARY);
+        $candidates = [
+            $phpDir . DIRECTORY_SEPARATOR . 'extras' . DIRECTORY_SEPARATOR . 'ssl' . DIRECTORY_SEPARATOR . 'cacert.pem',
+            'C:\\Program Files\\Ampps\\php82\\extras\\ssl\\cacert.pem',
+            'C:\\Program Files\\Ampps\\php\\extras\\ssl\\cacert.pem',
+        ];
+        foreach ($candidates as $candidate) {
+            if (is_file($candidate)) {
+                return $candidate;
+            }
+        }
+        return null;
+    }
+
     private function postGeminiJson(string $url, array $payload, string $apiKey, int $timeout = 60): array {
         $ch = curl_init($url);
-        curl_setopt_array($ch, [
+        $curlOpts = [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => json_encode($payload),
@@ -44,7 +64,14 @@ class AiController {
             ],
             CURLOPT_TIMEOUT => $timeout,
             CURLOPT_CONNECTTIMEOUT => 15,
-        ]);
+        ];
+
+        $caBundle = $this->resolveCaBundlePath();
+        if ($caBundle !== null) {
+            $curlOpts[CURLOPT_CAINFO] = $caBundle;
+        }
+
+        curl_setopt_array($ch, $curlOpts);
 
         $raw = curl_exec($ch);
         $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
