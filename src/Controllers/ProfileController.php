@@ -268,6 +268,17 @@ class ProfileController {
             $profileData['protein_target_g'] = $user['protein_target_g'] !== null ? (int)$user['protein_target_g'] : null;
             $profileData['carbs_target_g'] = $user['carbs_target_g'] !== null ? (int)$user['carbs_target_g'] : null;
             $profileData['fat_target_g'] = $user['fat_target_g'] !== null ? (int)$user['fat_target_g'] : null;
+
+            $followersListStmt = $this->db->prepare("
+                SELECT u.id, u.username, u.display_name, u.profile_image, u.location,
+                       (SELECT COUNT(*) FROM recipes r WHERE r.user_id = u.id AND r.is_public = 1) AS recipe_count
+                FROM user_follows uf
+                JOIN users u ON u.id = uf.follower_id
+                WHERE uf.followed_id = ?
+                ORDER BY uf.created_at DESC
+            ");
+            $followersListStmt->execute([$targetUserId]);
+            $profileData['followers'] = $followersListStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
         }
 
         echo json_encode([
