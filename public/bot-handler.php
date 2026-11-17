@@ -10,6 +10,83 @@ if (!headers_sent()) {
     header('Content-Type: text/html; charset=UTF-8');
 }
 
+$profileIdentifier = trim((string)($_GET['profile'] ?? ''));
+if ($profileIdentifier !== '') {
+    $profileRow = null;
+    $dbCandidates = [
+        __DIR__ . '/../src/Database.php',
+        __DIR__ . '/pantry-rebuild-api/src/Database.php',
+        __DIR__ . '/../pantry-rebuild-api/src/Database.php',
+        __DIR__ . '/../../pantry-rebuild-api/src/Database.php',
+    ];
+    foreach ($dbCandidates as $dbFile) {
+        $envFile = dirname($dbFile, 2) . '/.env';
+        if (is_file($dbFile) && is_file($envFile)) {
+            try {
+                require_once $dbFile;
+                $db = \App\Database::connect();
+                if (ctype_digit($profileIdentifier)) {
+                    $stmt = $db->prepare('SELECT id, username, display_name, bio, profile_image FROM users WHERE id = ? LIMIT 1');
+                    $stmt->execute([(int)$profileIdentifier]);
+                } else {
+                    $stmt = $db->prepare('SELECT id, username, display_name, bio, profile_image FROM users WHERE LOWER(username) = LOWER(?) LIMIT 1');
+                    $stmt->execute([$profileIdentifier]);
+                }
+                $profileRow = $stmt->fetch(\PDO::FETCH_ASSOC) ?: null;
+            } catch (\Throwable $e) {
+                $profileRow = null;
+            }
+            break;
+        }
+    }
+
+    $safeSlug = rawurlencode($profileRow['username'] ?? $profileIdentifier);
+    $profileUrl = 'https://veggievault.chrisandemmashow.com/profile/' . $safeSlug;
+    $displayName = trim((string)($profileRow['display_name'] ?? ''));
+    $username = trim((string)($profileRow['username'] ?? $profileIdentifier));
+    $ogTitle = ($displayName !== '' ? $displayName . ' (@' . $username . ')' : '@' . $username) . ' — Chef Profile | The Veggie Vault';
+    $ogDesc = trim((string)($profileRow['bio'] ?? ''));
+    if ($ogDesc === '') {
+        $ogDesc = 'Explore published whole-food, oil-free, plant-based recipes by @' . $username . ' on The Veggie Vault.';
+    }
+    $rawImg = trim((string)($profileRow['profile_image'] ?? ''));
+    $ogImg = $rawImg !== ''
+        ? (preg_match('/^https?:\/\//i', $rawImg) ? $rawImg : 'https://api.veggievault.chrisandemmashow.com' . (str_starts_with($rawImg, '/') ? '' : '/') . $rawImg)
+        : 'https://veggievault.chrisandemmashow.com/og-vault-preview.jpeg';
+
+    $esc = static fn(string $v): string => htmlspecialchars($v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $schema = json_encode([
+        '@context' => 'https://schema.org',
+        '@type' => 'ProfilePage',
+        'url' => $profileUrl,
+        'mainEntity' => [
+            '@type' => 'Person',
+            'name' => $displayName !== '' ? $displayName : $username,
+            'alternateName' => '@' . $username,
+            'description' => $ogDesc,
+            'image' => $ogImg,
+        ],
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+    echo "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"UTF-8\">\n";
+    echo "<title>" . $esc($ogTitle) . "</title>\n";
+    echo "<link rel=\"canonical\" href=\"" . $esc($profileUrl) . "\" />\n";
+    echo "<meta name=\"description\" content=\"" . $esc($ogDesc) . "\" />\n";
+    echo "<meta property=\"og:type\" content=\"profile\" />\n";
+    echo "<meta property=\"og:site_name\" content=\"The Veggie Vault\" />\n";
+    echo "<meta property=\"og:title\" content=\"" . $esc($ogTitle) . "\" />\n";
+    echo "<meta property=\"og:description\" content=\"" . $esc($ogDesc) . "\" />\n";
+    echo "<meta property=\"og:url\" content=\"" . $esc($profileUrl) . "\" />\n";
+    echo "<meta property=\"og:image\" content=\"" . $esc($ogImg) . "\" />\n";
+    echo "<meta name=\"twitter:card\" content=\"summary_large_image\" />\n";
+    echo "<meta name=\"twitter:title\" content=\"" . $esc($ogTitle) . "\" />\n";
+    echo "<meta name=\"twitter:description\" content=\"" . $esc($ogDesc) . "\" />\n";
+    echo "<meta name=\"twitter:image\" content=\"" . $esc($ogImg) . "\" />\n";
+    echo "<script type=\"application/ld+json\">" . $schema . "</script>\n";
+    echo "</head>\n<body><p>Redirecting to <a href=\"" . $esc($profileUrl) . "\">" . $esc($ogTitle) . "</a>...</p></body>\n</html>";
+    exit;
+}
+
 // Sanitize the incoming recipe ID (supporting both HTTP GET and CLI test invocation)
 $rawId = filter_input(INPUT_GET, 'id', FILTER_SANITIZE_NUMBER_INT);
 if ($rawId === null || $rawId === false || $rawId === '') {

@@ -261,6 +261,13 @@ public function getAllRecipes() {
             $stmt->execute([$id]);
             $recipe['micros'] = $stmt->fetchAll(\PDO::FETCH_ASSOC);
 
+            // 6b. Fetch gallery images (preserving original Emma/primary photo + user additions)
+            $recipe['images'] = $this->getRecipeGalleryImages(
+                (int)$id,
+                (string)($recipe['image_url'] ?? ''),
+                (string)($recipe['image_source'] ?? 'none')
+            );
+
             // 7. Echo the pristine, perfectly structured JSON back to React!
             echo json_encode($recipe);
 
@@ -1701,5 +1708,265 @@ public function getUserFavorites() {
             http_response_code(500);
             echo json_encode(["success" => false, "message" => "Database error: " . $e->getMessage()]);
         }
+    }
+
+    private function ensureRecipeImagesTable(): void {
+        $this->db->exec("
+            CREATE TABLE IF NOT EXISTS recipe_images (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                recipe_id INT NOT NULL,
+                user_id INT NOT NULL,
+                image_url VARCHAR(500) NOT NULL,
+                source VARCHAR(20) NOT NULL DEFAULT 'user',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_recipe_id (recipe_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ");
+    }
+
+    private function seedOriginalRecipeImageIfNeeded(int $recipeId, int $ownerUserId, string $currentImageUrl, string $currentSource): void {
+        $cleanUrl = trim($currentImageUrl);
+        if ($cleanUrl === '' || str_contains($cleanUrl, 'default-veggie-vault-placeholder')) {
+            return;
+        }
+        $check = $this->db->prepare("SELECT id FROM recipe_images WHERE recipe_id = ? AND image_url = ? LIMIT 1");
+        $check->execute([$recipeId, $cleanUrl]);
+        if (!$check->fetchColumn()) {
+            $src = ($currentSource === 'ai' || str_contains($cleanUrl, '_ai_recipe_')) ? 'ai' : 'user';
+            $ins = $this->db->prepare("INSERT INTO recipe_images (recipe_id, user_id, image_url, source) VALUES (?, ?, ?, ?)");
+            $ins->execute([$recipeId, $ownerUserId, $cleanUrl, $src]);
+        }
+    }
+
+    private function getRecipeGalleryImages(int $recipeId, string $primaryImageUrl = '', string $primarySource = 'none'): array {
+        $this->ensureRecipeImagesTable();
+        $stmt = $this->db->prepare("SELECT id, recipe_id, user_id, image_url, source, created_at FROM recipe_images WHERE recipe_id = ? ORDER BY id ASC");
+        $stmt->execute([$recipeId]);
+        $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+        $cleanPrimary = trim($primaryImageUrl);
+        if ($cleanPrimary !== '' && !str_contains($cleanPrimary, 'default-veggie-vault-placeholder')) {
+            $found = false;
+            foreach ($rows as $row) {
+                if (($row['image_url'] ?? '') === $cleanPrimary) {
+                    $found = true;
+                    break;
+                }
+            }
+            if (!$found) {
+                array_unshift($rows, [
+                    'id' => 0,
+                    'recipe_id' => $recipeId,
+                    'user_id' => 0,
+                    'image_url' => $cleanPrimary,
+                    'source' => ($primarySource === 'ai' || str_contains($cleanPrimary, '_ai_recipe_')) ? 'ai' : 'user',
+                    'created_at' => null,
+                ]);
+            }
+        }
+
+        return $rows;
+    }
+
+    /**
+     * POST /recipes/photos
+     * Allows the recipe creator to upload one or more additional dish photos to a recipe.
+     * Keeps the existing primary cover photo (e.g. Emma's AI image) unless set_primary is true.
+     */
+    public function addRecipePhotos() {
+        $currentUser = $this->requireAuth();
+        $userId = (int)$currentUser['id'];
+        $this->ensureRecipeImagesTable();
+
+        $data = json_decode(file_get_contents("php://input"), true) ?: [];
+        $recipeId = (int)($data['recipe_id'] ?? 0);
+        $rawImages = $data['images'] ?? [];
+        $setPrimary = !empty($data['set_primary']);
+
+        if ($recipeId <= 0 || !is_array($rawImages) || empty($rawImages)) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Recipe ID and at least one image are required."]);
+            return;
+        }
+
+        $recipe = $this->requireOwnedRecipe($recipeId, $userId);
+        $ownerUserId = (int)($recipe['user_id'] ?? $userId);
+        $currentPrimary = (string)($recipe['image_url'] ?? '');
+        $currentSource = (string)($recipe['image_source'] ?? 'none');
+
+        $this->seedOriginalRecipeImageIfNeeded($recipeId, $ownerUserId, $currentPrimary, $currentSource);
+
+        $mimeToExt = [
+            'image/jpeg' => 'jpg',
+            'image/png' => 'png',
+            'image/webp' => 'webp',
+            'image/gif' => 'gif',
+        ];
+        $uploadDir = __DIR__ . '/../../public/images/';
+        if (!is_dir($uploadDir)) {
+            mkdir($uploadDir, 0755, true);
+        }
+
+        $savedUrls = [];
+        foreach (array_slice($rawImages, 0, 8) as $rawImage) {
+            if (!is_string($rawImage) || trim($rawImage) === '') {
+                continue;
+            }
+            $base64Body = $rawImage;
+            if (strpos($rawImage, 'data:image') === 0) {
+                $parts = explode(';', $rawImage, 2);
+                $dataParts = explode(',', $parts[1] ?? '', 2);
+                $base64Body = $dataParts[1] ?? '';
+            }
+            $decodedData = base64_decode($base64Body, true);
+            $imgInfo = ($decodedData !== false && !empty($decodedData) && strlen($decodedData) <= 10 * 1024 * 1024)
+                ? @getimagesizefromstring($decodedData)
+                : false;
+
+            if ($imgInfo === false || !isset($mimeToExt[$imgInfo['mime'] ?? ''])) {
+                continue;
+            }
+
+            $ext = $mimeToExt[$imgInfo['mime']];
+            $filename = time() . '_' . bin2hex(random_bytes(4)) . '_user_recipe_' . $recipeId . '.' . $ext;
+            if (file_put_contents($uploadDir . $filename, $decodedData) !== false) {
+                $url = '/images/' . $filename;
+                $ins = $this->db->prepare("INSERT INTO recipe_images (recipe_id, user_id, image_url, source) VALUES (?, ?, ?, 'user')");
+                $ins->execute([$recipeId, $userId, $url]);
+                $savedUrls[] = $url;
+            }
+        }
+
+        if (empty($savedUrls)) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "No valid images could be saved."]);
+            return;
+        }
+
+        $newPrimary = $currentPrimary;
+        if ($setPrimary || $currentPrimary === '' || str_contains($currentPrimary, 'default-veggie-vault-placeholder')) {
+            $newPrimary = $savedUrls[0];
+            $upd = $this->db->prepare("UPDATE recipes SET image_url = ?, image_source = 'user' WHERE id = ?");
+            $upd->execute([$newPrimary, $recipeId]);
+        }
+
+        $gallery = $this->getRecipeGalleryImages($recipeId, $newPrimary, $currentSource);
+        echo json_encode([
+            "success" => true,
+            "message" => count($savedUrls) === 1 ? "Photo added to recipe!" : count($savedUrls) . " photos added to recipe!",
+            "image_url" => $newPrimary,
+            "images" => $gallery,
+        ]);
+    }
+
+    /**
+     * PUT /recipes/primary-photo
+     * Lets the recipe creator choose which gallery image is shown publicly on the recipe.
+     */
+    public function setPrimaryPhoto() {
+        $currentUser = $this->requireAuth();
+        $userId = (int)$currentUser['id'];
+        $this->ensureRecipeImagesTable();
+
+        $data = json_decode(file_get_contents("php://input"), true) ?: [];
+        $recipeId = (int)($data['recipe_id'] ?? 0);
+        $imageUrl = trim((string)($data['image_url'] ?? ''));
+
+        if ($recipeId <= 0 || $imageUrl === '') {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Recipe ID and image URL are required."]);
+            return;
+        }
+
+        $recipe = $this->requireOwnedRecipe($recipeId, $userId);
+        $ownerUserId = (int)($recipe['user_id'] ?? $userId);
+        $this->seedOriginalRecipeImageIfNeeded(
+            $recipeId,
+            $ownerUserId,
+            (string)($recipe['image_url'] ?? ''),
+            (string)($recipe['image_source'] ?? 'none')
+        );
+
+        $stmt = $this->db->prepare("SELECT image_url, source FROM recipe_images WHERE recipe_id = ? AND image_url = ? LIMIT 1");
+        $stmt->execute([$recipeId, $imageUrl]);
+        $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+
+        if (!$row) {
+            http_response_code(404);
+            echo json_encode(["success" => false, "message" => "Selected photo was not found in this recipe's gallery."]);
+            return;
+        }
+
+        $upd = $this->db->prepare("UPDATE recipes SET image_url = ?, image_source = ? WHERE id = ?");
+        $upd->execute([$row['image_url'], $row['source'] ?: 'user', $recipeId]);
+
+        $gallery = $this->getRecipeGalleryImages($recipeId, $row['image_url'], $row['source'] ?: 'user');
+        echo json_encode([
+            "success" => true,
+            "message" => "Public recipe photo updated!",
+            "image_url" => $row['image_url'],
+            "image_source" => $row['source'] ?: 'user',
+            "images" => $gallery,
+        ]);
+    }
+
+    /**
+     * DELETE /recipes/photos
+     * Removes a photo from a recipe's gallery (cannot remove the sole remaining photo if published).
+     */
+    public function deleteRecipePhoto() {
+        $currentUser = $this->requireAuth();
+        $userId = (int)$currentUser['id'];
+        $this->ensureRecipeImagesTable();
+
+        $recipeId = (int)($_GET['recipe_id'] ?? 0);
+        $imageId = (int)($_GET['image_id'] ?? 0);
+        if ($recipeId <= 0 || $imageId <= 0) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Recipe ID and image ID are required."]);
+            return;
+        }
+
+        $recipe = $this->requireOwnedRecipe($recipeId, $userId);
+        $stmt = $this->db->prepare("SELECT id, image_url FROM recipe_images WHERE id = ? AND recipe_id = ? LIMIT 1");
+        $stmt->execute([$imageId, $recipeId]);
+        $target = $stmt->fetch(\PDO::FETCH_ASSOC);
+        if (!$target) {
+            http_response_code(404);
+            echo json_encode(["success" => false, "message" => "Photo not found."]);
+            return;
+        }
+
+        $countStmt = $this->db->prepare("SELECT COUNT(*) FROM recipe_images WHERE recipe_id = ?");
+        $countStmt->execute([$recipeId]);
+        $totalCount = (int)$countStmt->fetchColumn();
+        if (!empty($recipe['is_public']) && $totalCount <= 1) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "A published recipe must keep at least one photo."]);
+            return;
+        }
+
+        $del = $this->db->prepare("DELETE FROM recipe_images WHERE id = ? AND recipe_id = ?");
+        $del->execute([$imageId, $recipeId]);
+
+        $newPrimary = (string)($recipe['image_url'] ?? '');
+        $newSource = (string)($recipe['image_source'] ?? 'none');
+        if ($newPrimary === $target['image_url']) {
+            $nextStmt = $this->db->prepare("SELECT image_url, source FROM recipe_images WHERE recipe_id = ? ORDER BY id ASC LIMIT 1");
+            $nextStmt->execute([$recipeId]);
+            $next = $nextStmt->fetch(\PDO::FETCH_ASSOC);
+            $newPrimary = $next ? $next['image_url'] : '';
+            $newSource = $next ? ($next['source'] ?: 'user') : 'none';
+            $upd = $this->db->prepare("UPDATE recipes SET image_url = ?, image_source = ? WHERE id = ?");
+            $upd->execute([$newPrimary, $newSource, $recipeId]);
+        }
+
+        $gallery = $this->getRecipeGalleryImages($recipeId, $newPrimary, $newSource);
+        echo json_encode([
+            "success" => true,
+            "message" => "Photo removed.",
+            "image_url" => $newPrimary,
+            "images" => $gallery,
+        ]);
     }
 }

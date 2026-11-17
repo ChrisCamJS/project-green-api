@@ -40,6 +40,9 @@ $router->add('POST', '/recipes/comments/vote', 'RecipeController', 'voteOnCommen
 $router->add('POST', '/recipes/favorite', 'RecipeController', 'toggleFavorite');
 $router->add('GET', '/recipes/favorites', 'RecipeController', 'getUserFavorites');
 $router->add('POST', '/recipes/attach-photo', 'RecipeController', 'publishWithPhoto');
+$router->add('POST', '/recipes/photos', 'RecipeController', 'addRecipePhotos');
+$router->add('PUT', '/recipes/primary-photo', 'RecipeController', 'setPrimaryPhoto');
+$router->add('DELETE', '/recipes/photos', 'RecipeController', 'deleteRecipePhoto');
 $router->add('POST', '/recipes/upgrade-nutrition', 'RecipeController', 'upgradeRecipeNutrition');
 $router->add('POST', '/recipes/publish-draft', 'RecipeController', 'publishDraft');
 
