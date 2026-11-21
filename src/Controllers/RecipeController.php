@@ -5,6 +5,7 @@ namespace App\Controllers;
 use PDO;
 use Exception;
 use App\Database;
+use App\Services\UsdaNutritionService;
 
 class RecipeController {
     private $db;
@@ -348,6 +349,20 @@ public function getAllRecipes() {
             $finalImageUrl = $rawImageUrl ?: '/images/default-veggie-vault-placeholder.jpg';
         }
 
+        // Compute deterministic USDA FoodData Central macros/micros BEFORE opening SQL transaction
+        $usdaResult = null;
+        if (!empty($ingredients) && is_array($ingredients)) {
+            try {
+                $usdaService = new UsdaNutritionService($db);
+                $usdaCandidate = $usdaService->calculateRecipeNutrition($ingredients, $yields);
+                if (!empty($usdaCandidate['success'])) {
+                    $usdaResult = $usdaCandidate;
+                }
+            } catch (\Throwable $e) {
+                error_log('USDA calculation skipped on saveGeneratedRecipe: ' . $e->getMessage());
+            }
+        }
+
         // 3. The SQL Transaction (All or Nothing!)
         // 3. The SQL Transaction (All or Nothing!)
         try {
@@ -419,15 +434,26 @@ public function getAllRecipes() {
                 }
             }
 
-            // STEP D: Insert Macros
-            $calories = $data['calories'] ?? 0;
-            $protein_g = $data['protein_g'] ?? 0;
-            $carbs_g = $data['carbs_g'] ?? 0;
-            $fat_g = $data['fat_g'] ?? 0;
-            $fiber_g = $data['fiber_g'] ?? 0;
+            // STEP D: Insert Macros (prefer deterministic USDA calculation, fallback to parsed estimates)
+            if ($usdaResult && !empty($usdaResult['macros'])) {
+                $usdaMacros = $usdaResult['macros'];
+                $calories = (float)$usdaMacros['calories'];
+                $protein_g = (float)$usdaMacros['protein_g'];
+                $carbs_g = (float)$usdaMacros['carbs_g'];
+                $fat_g = (float)$usdaMacros['fat_g'];
+                $fiber_g = (float)$usdaMacros['fiber_g'];
+                $mathCalc = (string)($usdaMacros['math_calculations'] ?? '');
+            } else {
+                $calories = $data['calories'] ?? 0;
+                $protein_g = $data['protein_g'] ?? 0;
+                $carbs_g = $data['carbs_g'] ?? 0;
+                $fat_g = $data['fat_g'] ?? 0;
+                $fiber_g = $data['fiber_g'] ?? 0;
+                $mathCalc = '';
+            }
 
             // Only insert if we actually captured some nutritional data
-            if ($calories > 0 || $protein_g > 0) {
+            if ($calories > 0 || $protein_g > 0 || $fat_g > 0 || $carbs_g > 0) {
                 $sqlMacros = "INSERT INTO macros (recipe_id, calories, protein_g, carbs_g, fat_g, fiber_g, math_calculations)
                         VALUES (:recipe_id, :calories, :protein_g, :carbs_g, :fat_g, :fiber_g, :math_calculations)";
                 $stmtMacros = $db->prepare($sqlMacros);
@@ -439,24 +465,32 @@ public function getAllRecipes() {
                     ':carbs_g' => (float)$carbs_g,
                     ':fat_g' => (float)$fat_g,
                     ':fiber_g' => (float)$fiber_g,
-                    ':math_calculations' => ''
+                    ':math_calculations' => $mathCalc
                 ]);
             }
 
-            // STEP E: Insert Micros (If they clicked Deep Dive before saving)
-            $micros = $data['micros'] ?? [];
+            // STEP E: Insert Micros (use USDA micros when Masterpiece analysis or micros requested)
+            $clientMicros = $data['micros'] ?? [];
+            $wantsFullMicros = (!empty($clientMicros) && is_array($clientMicros))
+                || $isPublic
+                || str_contains($notes, 'Advanced Nutritional Analysis');
+            $micros = ($wantsFullMicros && $usdaResult && !empty($usdaResult['micros']))
+                ? $usdaResult['micros']
+                : $clientMicros;
+
             if (!empty($micros) && is_array($micros)) {
                 $sqlMicros = "INSERT INTO micros (recipe_id, nutrient_name, amount, unit, daily_value_percentage, math_calculations)
                               VALUES (:recipe_id, :nutrient_name, :amount, :unit, :daily_value_percentage, :math_calculations)";
                 $stmtMicros = $db->prepare($sqlMicros);
                 foreach ($micros as $micro) {
+                    $dvVal = min(999.99, max(0.0, (float)($micro['dv'] ?? $micro['daily_value_percentage'] ?? 0)));
                     $stmtMicros->execute([
                         ':recipe_id' => $recipeId,
-                        ':nutrient_name' => $micro['name'] ?? $micro['nutrient_name'] ?? 'Unknown',
+                        ':nutrient_name' => substr((string)($micro['name'] ?? $micro['nutrient_name'] ?? 'Unknown'), 0, 100),
                         ':amount' => (float)($micro['amount'] ?? 0),
-                        ':unit' => $micro['unit'] ?? 'mg',
-                        ':daily_value_percentage' => (float)($micro['dv'] ?? $micro['daily_value_percentage'] ?? 0),
-                        ':math_calculations' => ''
+                        ':unit' => substr((string)($micro['unit'] ?? 'mg'), 0, 20),
+                        ':daily_value_percentage' => $dvVal,
+                        ':math_calculations' => (string)($micro['math_calculations'] ?? '')
                     ]);
                 }
             }
@@ -978,7 +1012,7 @@ public function getAllRecipes() {
      * Loads a recipe and verifies the active user owns it (or is an admin).
      */
     private function requireOwnedRecipe(int $recipeId, int $userId): array {
-        $stmt = $this->db->prepare("SELECT id, user_id, notes, image_url, image_source, is_public FROM recipes WHERE id = ?");
+        $stmt = $this->db->prepare("SELECT id, user_id, yields, notes, image_url, image_source, is_public FROM recipes WHERE id = ?");
         $stmt->execute([$recipeId]);
         $recipe = $stmt->fetch(\PDO::FETCH_ASSOC);
 
@@ -1102,6 +1136,143 @@ public function getAllRecipes() {
     }
 
     /**
+     * Replaces macros and/or micros rows for a recipe inside an active transaction.
+     */
+    private function replaceNutritionRowsInDb(int $recipeId, ?array $macros, ?array $micros): void {
+        if ($macros !== null) {
+            $delMacros = $this->db->prepare("DELETE FROM macros WHERE recipe_id = ?");
+            $delMacros->execute([$recipeId]);
+
+            $insMacros = $this->db->prepare(
+                "INSERT INTO macros (recipe_id, calories, protein_g, carbs_g, fat_g, fiber_g, math_calculations)
+                 VALUES (:recipe_id, :calories, :protein_g, :carbs_g, :fat_g, :fiber_g, :math_calculations)"
+            );
+            $insMacros->execute([
+                ':recipe_id' => $recipeId,
+                ':calories' => (float)($macros['calories'] ?? 0),
+                ':protein_g' => (float)($macros['protein_g'] ?? 0),
+                ':carbs_g' => (float)($macros['carbs_g'] ?? 0),
+                ':fat_g' => (float)($macros['fat_g'] ?? 0),
+                ':fiber_g' => (float)($macros['fiber_g'] ?? 0),
+                ':math_calculations' => (string)($macros['math_calculations'] ?? ''),
+            ]);
+        }
+
+        if ($micros !== null && is_array($micros) && !empty($micros)) {
+            $delMicros = $this->db->prepare("DELETE FROM micros WHERE recipe_id = ?");
+            $delMicros->execute([$recipeId]);
+
+            $insMicros = $this->db->prepare(
+                "INSERT INTO micros (recipe_id, nutrient_name, amount, unit, daily_value_percentage, math_calculations)
+                 VALUES (:recipe_id, :nutrient_name, :amount, :unit, :daily_value_percentage, :math_calculations)"
+            );
+            foreach ($micros as $micro) {
+                $dvVal = min(999.99, max(0.0, (float)($micro['dv'] ?? $micro['daily_value_percentage'] ?? 0)));
+                $insMicros->execute([
+                    ':recipe_id' => $recipeId,
+                    ':nutrient_name' => substr((string)($micro['name'] ?? $micro['nutrient_name'] ?? 'Unknown'), 0, 100),
+                    ':amount' => (float)($micro['amount'] ?? 0),
+                    ':unit' => substr((string)($micro['unit'] ?? 'mg'), 0, 20),
+                    ':daily_value_percentage' => $dvVal,
+                    ':math_calculations' => (string)($micro['math_calculations'] ?? ''),
+                ]);
+            }
+        }
+    }
+
+    /**
+     * POST /recipes/calculate-nutrition
+     * Runs deterministic USDA FoodData Central calculation for a saved recipe (or ingredient preview).
+     */
+    public function calculateNutrition() {
+        $currentUser = $this->requireAuth();
+        $userId = (int)$currentUser['id'];
+
+        $data = json_decode(file_get_contents("php://input"), true) ?: [];
+        $recipeId = (int)($data['recipe_id'] ?? 0);
+        $ingredients = isset($data['ingredients']) && is_array($data['ingredients']) ? $data['ingredients'] : [];
+        $yields = trim((string)($data['yields'] ?? ''));
+
+        if ($recipeId > 0) {
+            $recipe = $this->requireOwnedRecipe($recipeId, $userId);
+            if ($yields === '') {
+                $yields = (string)($recipe['yields'] ?? '4 servings');
+            }
+            if (empty($ingredients)) {
+                $ingStmt = $this->db->prepare("SELECT quantity, unit, ingredient_name FROM ingredients WHERE recipe_id = ?");
+                $ingStmt->execute([$recipeId]);
+                $ingredients = $ingStmt->fetchAll(\PDO::FETCH_ASSOC);
+            }
+        } elseif ($yields === '') {
+            $yields = '4 servings';
+        }
+
+        if (empty($ingredients)) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Ingredients are required to calculate nutrition."]);
+            return;
+        }
+
+        $usdaService = new UsdaNutritionService($this->db);
+        $calc = $usdaService->calculateRecipeNutrition($ingredients, $yields);
+
+        if (empty($calc['success'])) {
+            $statusCode = !empty($calc['rateLimited']) ? 503 : 422;
+            http_response_code($statusCode);
+            echo json_encode([
+                "success" => false,
+                "message" => $calc['message'] ?? 'Unable to calculate nutrition from USDA FoodData Central.',
+                "rateLimited" => !empty($calc['rateLimited']),
+                "breakdown" => $calc['breakdown'] ?? [],
+            ]);
+            return;
+        }
+
+        if ($recipeId > 0) {
+            try {
+                $this->db->beginTransaction();
+                $this->replaceNutritionRowsInDb($recipeId, $calc['macros'], $calc['micros']);
+                $this->db->commit();
+
+                $macroStmt = $this->db->prepare("SELECT * FROM macros WHERE recipe_id = ?");
+                $macroStmt->execute([$recipeId]);
+                $savedMacros = $macroStmt->fetch(\PDO::FETCH_ASSOC) ?: $calc['macros'];
+
+                $microStmt = $this->db->prepare("SELECT * FROM micros WHERE recipe_id = ?");
+                $microStmt->execute([$recipeId]);
+                $savedMicros = $microStmt->fetchAll(\PDO::FETCH_ASSOC);
+
+                echo json_encode([
+                    "success" => true,
+                    "source" => "usda_fdc",
+                    "usingDemoKey" => !empty($calc['usingDemoKey']),
+                    "servings" => $calc['servings'],
+                    "matchedCount" => $calc['matchedCount'],
+                    "totalIngredients" => $calc['totalIngredients'],
+                    "macros" => $savedMacros,
+                    "micros" => $savedMicros,
+                    "breakdown" => $calc['breakdown'],
+                    "message" => sprintf(
+                        "USDA nutrition updated (%d/%d ingredients matched).",
+                        (int)$calc['matchedCount'],
+                        (int)$calc['totalIngredients']
+                    ),
+                ]);
+                return;
+            } catch (\Exception $e) {
+                if ($this->db->inTransaction()) {
+                    $this->db->rollBack();
+                }
+                http_response_code(500);
+                echo json_encode(["success" => false, "message" => "Database error: " . $e->getMessage()]);
+                return;
+            }
+        }
+
+        echo json_encode($calc);
+    }
+
+    /**
      * Adds Emma's Deep Dive nutritional analysis and micronutrients to a saved draft/recipe.
      * Automatically publishes as a Masterpiece if a real dish image is already attached.
      */
@@ -1123,6 +1294,29 @@ public function getAllRecipes() {
 
         $recipe = $this->requireOwnedRecipe($recipeId, $userId);
 
+        // Attempt deterministic USDA FoodData Central calculation BEFORE transaction
+        $usdaResult = null;
+        try {
+            $ingStmt = $this->db->prepare("SELECT quantity, unit, ingredient_name FROM ingredients WHERE recipe_id = ?");
+            $ingStmt->execute([$recipeId]);
+            $storedIngredients = $ingStmt->fetchAll(\PDO::FETCH_ASSOC);
+            if (!empty($storedIngredients)) {
+                $usdaService = new UsdaNutritionService($this->db);
+                $candidate = $usdaService->calculateRecipeNutrition(
+                    $storedIngredients,
+                    (string)($recipe['yields'] ?? '4 servings')
+                );
+                if (!empty($candidate['success'])) {
+                    $usdaResult = $candidate;
+                }
+            }
+        } catch (\Throwable $e) {
+            error_log('USDA calculation skipped on upgradeRecipeNutrition: ' . $e->getMessage());
+        }
+
+        $effectiveMicros = ($usdaResult && !empty($usdaResult['micros'])) ? $usdaResult['micros'] : $micros;
+        $effectiveMacros = ($usdaResult && !empty($usdaResult['macros'])) ? $usdaResult['macros'] : null;
+
         try {
             $this->db->beginTransaction();
 
@@ -1136,7 +1330,7 @@ public function getAllRecipes() {
             }
 
             $hasImage = $this->hasRealImage($recipe);
-            $hasNutrition = (is_array($micros) && !empty($micros))
+            $hasNutrition = (is_array($effectiveMicros) && !empty($effectiveMicros))
                 || str_contains($updatedNotes, 'Advanced Nutritional Analysis')
                 || $this->hasMasterpieceNutrition($recipeId, $recipe);
 
@@ -1151,28 +1345,17 @@ public function getAllRecipes() {
                 ':id' => $recipeId
             ]);
 
-            if (is_array($micros) && !empty($micros)) {
-                $delStmt = $this->db->prepare("DELETE FROM micros WHERE recipe_id = ?");
-                $delStmt->execute([$recipeId]);
-
-                $insStmt = $this->db->prepare(
-                    "INSERT INTO micros (recipe_id, nutrient_name, amount, unit, daily_value_percentage, math_calculations)
-                     VALUES (:recipe_id, :nutrient_name, :amount, :unit, :daily_value_percentage, :math_calculations)"
-                );
-
-                foreach ($micros as $micro) {
-                    $insStmt->execute([
-                        ':recipe_id' => $recipeId,
-                        ':nutrient_name' => $micro['name'] ?? $micro['nutrient_name'] ?? 'Unknown',
-                        ':amount' => (float)($micro['amount'] ?? 0),
-                        ':unit' => $micro['unit'] ?? 'mg',
-                        ':daily_value_percentage' => (float)($micro['dv'] ?? $micro['daily_value_percentage'] ?? 0),
-                        ':math_calculations' => ''
-                    ]);
-                }
-            }
+            $this->replaceNutritionRowsInDb(
+                $recipeId,
+                $effectiveMacros,
+                (is_array($effectiveMicros) && !empty($effectiveMicros)) ? $effectiveMicros : null
+            );
 
             $this->db->commit();
+
+            $macroStmt = $this->db->prepare("SELECT * FROM macros WHERE recipe_id = ?");
+            $macroStmt->execute([$recipeId]);
+            $savedMacros = $macroStmt->fetch(\PDO::FETCH_ASSOC);
 
             $microStmt = $this->db->prepare("SELECT * FROM micros WHERE recipe_id = ?");
             $microStmt->execute([$recipeId]);
@@ -1181,14 +1364,18 @@ public function getAllRecipes() {
             echo json_encode([
                 "success" => true,
                 "notes" => $updatedNotes,
+                "macros" => $savedMacros ?: null,
                 "micros" => $savedMicros,
+                "usdaCalculated" => $usdaResult !== null,
                 "isPublic" => (bool)$newIsPublic,
                 "message" => $newIsPublic
                     ? "Masterpiece nutrition added and recipe published!"
                     : "Masterpiece nutritional analysis saved! Add a dish photo to publish."
             ]);
         } catch (\Exception $e) {
-            $this->db->rollBack();
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
             http_response_code(500);
             echo json_encode(["success" => false, "message" => "Database error: " . $e->getMessage()]);
         }
@@ -1969,6 +2156,52 @@ public function getUserFavorites() {
             "message" => "Photo removed.",
             "image_url" => $newPrimary,
             "images" => $gallery,
+        ]);
+    }
+
+    /**
+     * PUT /recipes/title
+     * Lets a recipe owner (or admin) rename their own recipe directly.
+     */
+    public function updateRecipeTitle() {
+        $currentUser = $this->requireAuth();
+        $userId = (int)$currentUser['id'];
+
+        $data = json_decode(file_get_contents("php://input"), true) ?: [];
+        $recipeId = (int)($data['recipe_id'] ?? 0);
+        $rawTitle = trim((string)($data['title'] ?? ''));
+
+        $cleanTitle = preg_replace('/\s+/', ' ', $rawTitle);
+        $cleanTitle = preg_replace('/^\[(.+)\]$/', '$1', trim((string)$cleanTitle));
+        $cleanTitle = trim((string)$cleanTitle);
+
+        if ($recipeId <= 0) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Recipe ID is required."]);
+            return;
+        }
+
+        if ($cleanTitle === '') {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Recipe name cannot be empty."]);
+            return;
+        }
+
+        if (mb_strlen($cleanTitle) > 200) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Recipe name must be 200 characters or fewer."]);
+            return;
+        }
+
+        $this->requireOwnedRecipe($recipeId, $userId);
+
+        $stmt = $this->db->prepare("UPDATE recipes SET title = ? WHERE id = ?");
+        $stmt->execute([$cleanTitle, $recipeId]);
+
+        echo json_encode([
+            "success" => true,
+            "message" => "Recipe name updated!",
+            "title" => $cleanTitle,
         ]);
     }
 }
