@@ -306,5 +306,134 @@ class AdminController {
         }
     }
 
+    /**
+     * Ensures admin_emma_context table exists for storing an admin's private background document.
+     */
+    private function ensureAdminEmmaContextTable(\PDO $db): void {
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS admin_emma_context (
+                user_id INT NOT NULL PRIMARY KEY,
+                file_name VARCHAR(255) DEFAULT NULL,
+                context_text MEDIUMTEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ");
+    }
+
+    /**
+     * Authenticates an active admin session and returns their user ID.
+     */
+    private function requireAdminSessionUserId(): int {
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+        $userId = (int)($_SESSION['user_id'] ?? 0);
+        if (empty($_SESSION['is_admin']) || $userId <= 0) {
+            http_response_code(403);
+            echo json_encode(["success" => false, "message" => "Admin access required."]);
+            exit;
+        }
+        return $userId;
+    }
+
+    /**
+     * GET /admin/emma-context
+     * Returns the signed-in admin's saved private Emma background context document.
+     */
+    public function getAdminEmmaContext(): void {
+        $userId = $this->requireAdminSessionUserId();
+        $db = Database::connect();
+        $this->ensureAdminEmmaContextTable($db);
+
+        $stmt = $db->prepare("SELECT file_name, context_text, CHAR_LENGTH(context_text) AS char_count, updated_at FROM admin_emma_context WHERE user_id = ? LIMIT 1");
+        $stmt->execute([$userId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$row) {
+            echo json_encode(["success" => true, "context" => null]);
+            return;
+        }
+
+        echo json_encode([
+            "success" => true,
+            "context" => [
+                "file_name" => $row['file_name'] ?: null,
+                "context_text" => (string)$row['context_text'],
+                "char_count" => (int)$row['char_count'],
+                "updated_at" => $row['updated_at'],
+            ],
+        ]);
+    }
+
+    /**
+     * PUT /admin/emma-context
+     * Creates or replaces the signed-in admin's private Emma context document.
+     */
+    public function saveAdminEmmaContext(): void {
+        $userId = $this->requireAdminSessionUserId();
+        $data = json_decode(file_get_contents("php://input"), true) ?: [];
+
+        $fileName = trim((string)($data['file_name'] ?? ''));
+        $fileName = $fileName !== '' ? mb_substr($fileName, 0, 255) : null;
+        $contextText = trim((string)($data['context_text'] ?? ''));
+
+        if ($contextText === '') {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Context document text cannot be empty."]);
+            return;
+        }
+
+        if (mb_strlen($contextText) > 100000) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Context document must be 100,000 characters or fewer."]);
+            return;
+        }
+
+        $db = Database::connect();
+        $this->ensureAdminEmmaContextTable($db);
+
+        $stmt = $db->prepare("
+            INSERT INTO admin_emma_context (user_id, file_name, context_text)
+            VALUES (?, ?, ?)
+            ON DUPLICATE KEY UPDATE
+                file_name = VALUES(file_name),
+                context_text = VALUES(context_text)
+        ");
+        $stmt->execute([$userId, $fileName, $contextText]);
+
+        $readStmt = $db->prepare("SELECT file_name, context_text, CHAR_LENGTH(context_text) AS char_count, updated_at FROM admin_emma_context WHERE user_id = ? LIMIT 1");
+        $readStmt->execute([$userId]);
+        $saved = $readStmt->fetch(PDO::FETCH_ASSOC);
+
+        echo json_encode([
+            "success" => true,
+            "message" => "Emma's admin context document saved!",
+            "context" => $saved ? [
+                "file_name" => $saved['file_name'] ?: null,
+                "context_text" => (string)$saved['context_text'],
+                "char_count" => (int)$saved['char_count'],
+                "updated_at" => $saved['updated_at'],
+            ] : null,
+        ]);
+    }
+
+    /**
+     * DELETE /admin/emma-context
+     * Removes the signed-in admin's private Emma context document.
+     */
+    public function deleteAdminEmmaContext(): void {
+        $userId = $this->requireAdminSessionUserId();
+        $db = Database::connect();
+        $this->ensureAdminEmmaContextTable($db);
+
+        $stmt = $db->prepare("DELETE FROM admin_emma_context WHERE user_id = ?");
+        $stmt->execute([$userId]);
+
+        echo json_encode([
+            "success" => true,
+            "message" => "Admin context document removed.",
+        ]);
+    }
+
 }
 

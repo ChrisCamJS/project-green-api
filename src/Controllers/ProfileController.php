@@ -3,6 +3,7 @@
 namespace App\Controllers;
 
 use App\Database;
+use App\Services\ProfanityFilterService;
 use PDO;
 
 class ProfileController {
@@ -323,6 +324,17 @@ class ProfileController {
         $allergies = trim((string)($data['allergies'] ?? ''));
         $websiteUrl = trim((string)($data['website_url'] ?? ''));
         $pronouns = trim((string)($data['pronouns'] ?? ''));
+
+        (new ProfanityFilterService())->assertFieldsClean([
+            'username' => $username,
+            'display name' => $displayName,
+            'location' => $location,
+            'bio' => $bio,
+            'favorite cuisine' => $favoriteCuisine,
+            'dietary focus' => $dietaryFocus,
+            'allergies' => $allergies,
+            'pronouns' => $pronouns,
+        ]);
 
         if ($websiteUrl !== '' && !preg_match('#^https?://#i', $websiteUrl)) {
             $websiteUrl = 'https://' . $websiteUrl;

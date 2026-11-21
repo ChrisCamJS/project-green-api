@@ -22,6 +22,9 @@ $router->add('POST', '/admin/invites', 'AdminController', 'generateInviteCode');
 $router->add('PUT', '/admin/invites/toggle', 'AdminController', 'toggleInviteCode');
 $router->add('GET', '/admin/recipes', 'AdminController', 'getAdminRecipes');
 $router->add('PUT', '/admin/recipes', 'AdminController', 'updateAdminRecipes');
+$router->add('GET', '/admin/emma-context', 'AdminController', 'getAdminEmmaContext');
+$router->add('PUT', '/admin/emma-context', 'AdminController', 'saveAdminEmmaContext');
+$router->add('DELETE', '/admin/emma-context', 'AdminController', 'deleteAdminEmmaContext');
 $router->add('POST', '/users/request-reset', 'AuthController', 'requestPasswordReset');
 $router->add('POST', '/users/reset-password', 'AuthController', 'resetPassword');
 

@@ -3,6 +3,7 @@
 namespace App\Controllers;
 
 use App\Database;
+use App\Services\ProfanityFilterService;
 use PDO;
 
 class AuthController {
@@ -116,6 +117,8 @@ class AuthController {
             echo json_encode(["success" => false, "message" => "Those passwords don't match, mate. Give it another go."]);
             return;
         }
+
+        (new ProfanityFilterService())->assertClean($username, 'username');
 
         // 2. The Dynamic Bouncer Check (Database invite_codes table + optional .env fallback)
         if ($requireInviteCode) {

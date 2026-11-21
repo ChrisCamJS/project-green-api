@@ -21,6 +21,45 @@ class AiController {
         return (int)$_SESSION['user_id'];
     }
 
+    /**
+     * Loads the signed-in admin's confidential background context document for Emma, if configured.
+     * Returns empty string for non-admin sessions or when no context document is stored.
+     */
+    private function getActiveAdminContextPromptBlock(): string {
+        if (empty($_SESSION['is_admin']) || empty($_SESSION['user_id'])) {
+            return '';
+        }
+
+        $adminId = (int)$_SESSION['user_id'];
+        try {
+            $db = Database::connect();
+            $stmt = $db->prepare("SELECT file_name, context_text FROM admin_emma_context WHERE user_id = ? LIMIT 1");
+            $stmt->execute([$adminId]);
+            $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+            if (!$row) {
+                return '';
+            }
+
+            $rawText = trim((string)($row['context_text'] ?? ''));
+            if ($rawText === '') {
+                return '';
+            }
+
+            $clamped = mb_substr($rawText, 0, 60000);
+            $sourceLabel = trim((string)($row['file_name'] ?? '')) ?: 'Uploaded Admin Document';
+
+            return "CONFIDENTIAL ADMIN BACKGROUND CONTEXT (ONLY FOR SPEAKING WITH THIS ADMIN USER — \"{$sourceLabel}\"):\n"
+                . "You are currently speaking directly with the Vault admin/creator. Keep the following personal/brand/operational context in mind in all replies:\n\n"
+                . $clamped . "\n\n"
+                . "PRIVACY & BOUNDARY RULE: Use this context naturally to tailor advice, tone, continuity, and preferences when conversing with the admin, "
+                . "but NEVER include private personal details from this document inside any generated public recipe title, recipe description, "
+                . "ingredients/instructions saved to the community database, or public nutritional Deep Dive analysis.";
+        } catch (\Throwable $e) {
+            // Silently ignore if admin_emma_context table does not yet exist
+            return '';
+        }
+    }
+
     private function getGeminiApiKey(): string {
         $env = Database::loadEnv();
         $key = trim((string)($env['GEMINI_API_KEY'] ?? ''));
@@ -129,6 +168,16 @@ class AiController {
         if (is_array($systemInstruction) && !empty($systemInstruction)) {
             $payload['systemInstruction'] = $systemInstruction;
         }
+        $adminContextBlock = $this->getActiveAdminContextPromptBlock();
+        if ($adminContextBlock !== '') {
+            if (!isset($payload['systemInstruction']) || !is_array($payload['systemInstruction'])) {
+                $payload['systemInstruction'] = ['parts' => []];
+            }
+            if (!isset($payload['systemInstruction']['parts']) || !is_array($payload['systemInstruction']['parts'])) {
+                $payload['systemInstruction']['parts'] = [];
+            }
+            $payload['systemInstruction']['parts'][] = ['text' => $adminContextBlock];
+        }
 
         $url = self::GEMINI_BASE . '/v1beta/models/' . self::CHAT_MODEL . ':generateContent';
         $res = $this->postGeminiJson($url, $payload, $apiKey, 60);
@@ -234,11 +283,14 @@ class AiController {
             return;
         }
 
+        $adminContextBlock = $this->getActiveAdminContextPromptBlock();
+
         echo json_encode([
             'success' => true,
             'token' => $res['data']['name'],
             'expireTime' => $res['data']['expireTime'] ?? $expireTime,
             'newSessionExpireTime' => $res['data']['newSessionExpireTime'] ?? $newSessionExpireTime,
+            'adminContext' => $adminContextBlock !== '' ? $adminContextBlock : null,
         ]);
     }
 }

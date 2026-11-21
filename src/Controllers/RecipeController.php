@@ -5,6 +5,7 @@ namespace App\Controllers;
 use PDO;
 use Exception;
 use App\Database;
+use App\Services\ProfanityFilterService;
 use App\Services\UsdaNutritionService;
 
 class RecipeController {
@@ -1707,18 +1708,21 @@ public function getUserFavorites() {
         
         $recipeId = $data['recipe_id'] ?? null;
         $parentId = $data['parent_id'] ?? null;
-        $body = htmlspecialchars(trim($data['body'] ?? ''));
-        $rawImage = $data['image'] ?? null; 
-        
+        $rawBody = trim((string)($data['body'] ?? ''));
+        $rawImage = $data['image'] ?? null;
+
         // Take identity from session, not client input
         $authorName = $currentUser['username'];
         $userId = $currentUser['id'];
 
-        if (!$recipeId || empty($body)) {
+        if (!$recipeId || $rawBody === '') {
             http_response_code(400);
             echo json_encode(["success" => false, "message" => "Cannot post an empty comment."]);
             return;
         }
+
+        (new ProfanityFilterService())->assertClean($rawBody, 'comment');
+        $body = htmlspecialchars($rawBody);
 
         $finalImageUrl = null;
 
@@ -2192,6 +2196,8 @@ public function getUserFavorites() {
             echo json_encode(["success" => false, "message" => "Recipe name must be 200 characters or fewer."]);
             return;
         }
+
+        (new ProfanityFilterService())->assertClean($cleanTitle, 'recipe name');
 
         $this->requireOwnedRecipe($recipeId, $userId);
 
