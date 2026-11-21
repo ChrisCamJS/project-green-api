@@ -286,7 +286,9 @@ public function getAllRecipes() {
         $userId = $_SESSION['user_id'] ?? null;
 
         // 1. Unpack the data from React
-        $title = $data['title'] ?? 'Emma\'s AI Creation';
+        $rawTitle = trim((string)($data['title'] ?? ''));
+        $rawTitle = preg_replace('/^\[(.+)\]$/u', '$1', $rawTitle);
+        $title = trim((string)$rawTitle) !== '' ? trim((string)$rawTitle) : 'Emma\'s AI Creation';
         $username = $data['username'] ?? 'Emma';
         $description = $data['description'] ?? 'A glorious AI-generated WFPB meal.';
         $ingredients = $data['ingredients'] ?? [];
