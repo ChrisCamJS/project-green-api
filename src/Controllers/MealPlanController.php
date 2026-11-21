@@ -368,7 +368,7 @@ class MealPlanController {
         $recipeId = (int)($data['recipe_id'] ?? 0);
         $planDate = trim((string)($data['plan_date'] ?? ''));
         $mealSlot = $this->normalizeSlot($data['meal_slot'] ?? 'dinner');
-        $servings = isset($data['servings']) ? max(0.5, min(20.0, (float)$data['servings'])) : 1.0;
+        $servings = isset($data['servings']) ? max(0.25, min(20.0, round((float)$data['servings'], 2))) : 1.0;
         $notes = substr(trim((string)($data['notes'] ?? '')), 0, 255);
 
         if ($recipeId <= 0 || !$this->isValidDate($planDate)) {
@@ -463,7 +463,7 @@ class MealPlanController {
         }
 
         $mealSlot = isset($data['meal_slot']) ? $this->normalizeSlot($data['meal_slot']) : $existing['meal_slot'];
-        $servings = isset($data['servings']) ? max(0.5, min(20.0, (float)$data['servings'])) : (float)$existing['servings'];
+        $servings = isset($data['servings']) ? max(0.25, min(20.0, round((float)$data['servings'], 2))) : (float)$existing['servings'];
         $notes = array_key_exists('notes', $data)
             ? substr(trim((string)($data['notes'] ?? '')), 0, 255)
             : (string)($existing['notes'] ?? '');
