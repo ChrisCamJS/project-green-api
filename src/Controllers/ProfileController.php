@@ -5,6 +5,7 @@ namespace App\Controllers;
 use App\Database;
 use App\Services\ImageModerationService;
 use App\Services\ProfanityFilterService;
+use App\Services\RecipeVariantService;
 use PDO;
 
 class ProfileController {
@@ -174,16 +175,24 @@ class ProfileController {
             $isFollowing = (bool)$checkFollowStmt->fetchColumn();
         }
 
-        $recipesSql = "SELECT r.id, r.user_id, r.title, r.description, r.image_url, r.yields,
+        RecipeVariantService::ensureSchema($this->db);
+
+        $recipesSql = "SELECT r.id, r.user_id, r.parent_recipe_id, r.root_recipe_id, r.is_masterpiece, r.variant_summary,
+                              r.title, r.description, r.image_url, r.yields,
                               r.prep_time_mins, r.cook_time_mins, r.is_wfpb, r.is_oil_free,
                               r.is_gluten_free, r.is_sugar_free,
                               r.is_public, r.image_source, r.created_at, r.average_rating, r.rating_count,
                               u.username AS author_name,
                               u.display_name AS author_display_name,
                               u.profile_image AS author_avatar,
+                              pr.title AS parent_recipe_title,
+                              pr.user_id AS parent_author_id,
+                              pu.username AS parent_author_name,
                               CASE WHEN rf.recipe_id IS NOT NULL THEN 1 ELSE 0 END AS is_favorite
                        FROM recipes r
                        LEFT JOIN users u ON r.user_id = u.id
+                       LEFT JOIN recipes pr ON r.parent_recipe_id = pr.id
+                       LEFT JOIN users pu ON pr.user_id = pu.id
                        LEFT JOIN recipe_favorites rf ON rf.recipe_id = r.id AND rf.user_id = :fav_user_id
                        WHERE r.user_id = :target_user_id AND r.is_public = 1
                        ORDER BY r.created_at DESC";
@@ -195,10 +204,24 @@ class ProfileController {
         $rawRecipes = $recipesStmt->fetchAll(PDO::FETCH_ASSOC);
 
         $formattedRecipes = array_map(function($r) use ($isFollowing) {
+            $parentRecipeId = !empty($r['parent_recipe_id']) ? (int)$r['parent_recipe_id'] : null;
+            $rootRecipeId = !empty($r['root_recipe_id']) ? (int)$r['root_recipe_id'] : null;
             return [
                 'id' => (int)$r['id'],
                 'user_id' => $r['user_id'] ? (int)$r['user_id'] : null,
                 'authorId' => $r['user_id'] ? (int)$r['user_id'] : null,
+                'parent_recipe_id' => $parentRecipeId,
+                'parentRecipeId' => $parentRecipeId,
+                'root_recipe_id' => $rootRecipeId,
+                'rootRecipeId' => $rootRecipeId,
+                'is_masterpiece' => (bool)($r['is_masterpiece'] ?? 0),
+                'isMasterpiece' => (bool)($r['is_masterpiece'] ?? 0),
+                'isVariant' => $parentRecipeId !== null,
+                'variant_summary' => $r['variant_summary'] ?? null,
+                'variantSummary' => $r['variant_summary'] ?? null,
+                'parentRecipeTitle' => $r['parent_recipe_title'] ?? null,
+                'parentAuthorId' => !empty($r['parent_author_id']) ? (int)$r['parent_author_id'] : null,
+                'parentAuthorName' => $parentRecipeId !== null ? ($r['parent_author_name'] ?? 'Emma (AI)') : null,
                 'title' => $r['title'],
                 'authorName' => $r['author_name'] ?? 'Emma (AI)',
                 'authorDisplayName' => $r['author_display_name'] ?? null,

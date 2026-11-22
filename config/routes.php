@@ -48,6 +48,7 @@ $router->add('PUT', '/recipes/primary-photo', 'RecipeController', 'setPrimaryPho
 $router->add('DELETE', '/recipes/photos', 'RecipeController', 'deleteRecipePhoto');
 $router->add('PUT', '/recipes/title', 'RecipeController', 'updateRecipeTitle');
 $router->add('POST', '/recipes/calculate-nutrition', 'RecipeController', 'calculateNutrition');
+$router->add('POST', '/recipes/create-variant', 'RecipeController', 'createRecipeVariant');
 $router->add('POST', '/recipes/upgrade-nutrition', 'RecipeController', 'upgradeRecipeNutrition');
 $router->add('POST', '/recipes/publish-draft', 'RecipeController', 'publishDraft');
 

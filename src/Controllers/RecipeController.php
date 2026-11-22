@@ -7,6 +7,7 @@ use Exception;
 use App\Database;
 use App\Services\ImageModerationService;
 use App\Services\ProfanityFilterService;
+use App\Services\RecipeVariantService;
 use App\Services\UsdaNutritionService;
 
 class RecipeController {
@@ -61,23 +62,30 @@ public function getAllRecipes() {
             $currentUserId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
             $db = Database::connect();
             $this->ensureGlutenFreeBackfilled($db);
+            RecipeVariantService::ensureSchema($db);
             
             // Check if the user is an admin (assuming you start the session at the top of the method)
             $isAdmin = isset($_SESSION['is_admin']) && $_SESSION['is_admin'] == 1;
 
             // Base query — prioritize recipes created by users that the logged-in user follows
-            $sql = "SELECT r.id, r.user_id, r.title, r.description, r.image_url, r.yields, 
+            $sql = "SELECT r.id, r.user_id, r.parent_recipe_id, r.root_recipe_id, r.is_masterpiece, r.variant_summary,
+                        r.title, r.description, r.image_url, r.yields, 
                         r.prep_time_mins, r.cook_time_mins, r.is_wfpb, r.is_oil_free,
                         r.is_gluten_free, r.is_sugar_free,
                         r.is_public, r.image_source, r.created_at, r.average_rating, r.rating_count,
                         u.username AS author_name,
                         u.display_name AS author_display_name,
                         u.profile_image AS author_avatar,
+                        pr.title AS parent_recipe_title,
+                        pr.user_id AS parent_author_id,
+                        pu.username AS parent_author_name,
                         CASE WHEN rf.recipe_id IS NOT NULL THEN 1 ELSE 0 END AS is_favorite,
                         CASE WHEN uf.followed_id IS NOT NULL THEN 1 ELSE 0 END AS is_followed_author,
                         (SELECT GROUP_CONCAT(i.ingredient_name SEPARATOR '||') FROM ingredients i WHERE i.recipe_id = r.id) AS ingredient_names
                     FROM recipes r
                     LEFT JOIN users u ON r.user_id = u.id
+                    LEFT JOIN recipes pr ON r.parent_recipe_id = pr.id
+                    LEFT JOIN users pu ON pr.user_id = pu.id
                     LEFT JOIN recipe_favorites rf ON rf.recipe_id = r.id AND rf.user_id = :fav_user_id
                     LEFT JOIN user_follows uf ON uf.followed_id = r.user_id AND uf.follower_id = :follow_user_id";
 
@@ -99,10 +107,24 @@ public function getAllRecipes() {
                 $ingredients = !empty($r['ingredient_names'])
                     ? array_values(array_filter(array_map('trim', explode('||', $r['ingredient_names']))))
                     : [];
+                $parentRecipeId = !empty($r['parent_recipe_id']) ? (int)$r['parent_recipe_id'] : null;
+                $rootRecipeId = !empty($r['root_recipe_id']) ? (int)$r['root_recipe_id'] : null;
                 return [
                     'id' => $r['id'],
                     'user_id' => $r['user_id'] ? (int)$r['user_id'] : null,
                     'authorId' => $r['user_id'] ? (int)$r['user_id'] : null,
+                    'parent_recipe_id' => $parentRecipeId,
+                    'parentRecipeId' => $parentRecipeId,
+                    'root_recipe_id' => $rootRecipeId,
+                    'rootRecipeId' => $rootRecipeId,
+                    'is_masterpiece' => (bool)($r['is_masterpiece'] ?? 0),
+                    'isMasterpiece' => (bool)($r['is_masterpiece'] ?? 0),
+                    'isVariant' => $parentRecipeId !== null,
+                    'variant_summary' => $r['variant_summary'] ?? null,
+                    'variantSummary' => $r['variant_summary'] ?? null,
+                    'parentRecipeTitle' => $r['parent_recipe_title'] ?? null,
+                    'parentAuthorId' => !empty($r['parent_author_id']) ? (int)$r['parent_author_id'] : null,
+                    'parentAuthorName' => $parentRecipeId !== null ? ($r['parent_author_name'] ?? 'Emma (AI)') : null,
                     'title' => $r['title'],
                     'authorName' => $r['author_name'] ?? 'Emma (AI)', // Falls back to me if no user is found!
                     'authorDisplayName' => $r['author_display_name'] ?? null,
@@ -204,14 +226,28 @@ public function getAllRecipes() {
             }
             $currentUserId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
             $this->ensureFiberBackfilled($this->db);
+            RecipeVariantService::ensureSchema($this->db);
 
-            // 2. Fetch the overarching recipe details AND the author's username & profile metadata
+            // 2. Fetch the overarching recipe details, author metadata, and parent/root variant lineage
             $sql = "SELECT r.*, u.username AS author_name,
                            u.display_name AS author_display_name,
                            u.profile_image AS author_avatar,
-                           u.location AS author_location
+                           u.location AS author_location,
+                           pr.title AS parent_recipe_title,
+                           pr.user_id AS parent_author_id,
+                           pr.image_url AS parent_image_url,
+                           pu.username AS parent_author_name,
+                           pu.display_name AS parent_author_display_name,
+                           rr.title AS root_recipe_title,
+                           rr.user_id AS root_author_id,
+                           ru.username AS root_author_name,
+                           ru.display_name AS root_author_display_name
                     FROM recipes r 
-                    LEFT JOIN users u ON r.user_id = u.id 
+                    LEFT JOIN users u ON r.user_id = u.id
+                    LEFT JOIN recipes pr ON r.parent_recipe_id = pr.id
+                    LEFT JOIN users pu ON pr.user_id = pu.id
+                    LEFT JOIN recipes rr ON r.root_recipe_id = rr.id
+                    LEFT JOIN users ru ON rr.user_id = ru.id
                     WHERE r.id = ?";
             $stmt = $this->db->prepare($sql);
             $stmt->execute([$id]);
@@ -231,7 +267,10 @@ public function getAllRecipes() {
                 $isFollowedAuthor = (bool)$followStmt->fetchColumn();
             }
 
-            // Map the author metadata for React
+            $parentRecipeId = !empty($recipe['parent_recipe_id']) ? (int)$recipe['parent_recipe_id'] : null;
+            $rootRecipeId = !empty($recipe['root_recipe_id']) ? (int)$recipe['root_recipe_id'] : null;
+
+            // Map the author & variant lineage metadata for React
             $recipe['authorId'] = $authorId;
             $recipe['authorName'] = $recipe['author_name'] ?? 'Emma (AI)';
             $recipe['authorDisplayName'] = $recipe['author_display_name'] ?? null;
@@ -241,6 +280,28 @@ public function getAllRecipes() {
             $recipe['isOilFree'] = (bool)($recipe['is_oil_free'] ?? 0);
             $recipe['isGlutenFree'] = (bool)($recipe['is_gluten_free'] ?? 0);
             $recipe['isSugarFree'] = (bool)($recipe['is_sugar_free'] ?? 1);
+            $recipe['parentRecipeId'] = $parentRecipeId;
+            $recipe['rootRecipeId'] = $rootRecipeId;
+            $recipe['isVariant'] = $parentRecipeId !== null;
+            $recipe['variantSummary'] = $recipe['variant_summary'] ?? null;
+            $recipe['parentRecipeTitle'] = $recipe['parent_recipe_title'] ?? null;
+            $recipe['parentAuthorId'] = !empty($recipe['parent_author_id']) ? (int)$recipe['parent_author_id'] : null;
+            $recipe['parentAuthorName'] = $parentRecipeId !== null ? ($recipe['parent_author_name'] ?? 'Emma (AI)') : null;
+            $recipe['parentRecipe'] = $parentRecipeId !== null ? [
+                'id' => $parentRecipeId,
+                'title' => $recipe['parent_recipe_title'] ?? 'Original Recipe',
+                'authorId' => !empty($recipe['parent_author_id']) ? (int)$recipe['parent_author_id'] : null,
+                'authorName' => $recipe['parent_author_name'] ?? 'Emma (AI)',
+                'authorDisplayName' => $recipe['parent_author_display_name'] ?? null,
+                'imageUrl' => $recipe['parent_image_url'] ?? null,
+            ] : null;
+            $recipe['rootRecipe'] = $rootRecipeId !== null ? [
+                'id' => $rootRecipeId,
+                'title' => $recipe['root_recipe_title'] ?? ($recipe['parent_recipe_title'] ?? 'Original Recipe'),
+                'authorId' => !empty($recipe['root_author_id']) ? (int)$recipe['root_author_id'] : null,
+                'authorName' => $recipe['root_author_name'] ?? ($recipe['parent_author_name'] ?? 'Emma (AI)'),
+                'authorDisplayName' => $recipe['root_author_display_name'] ?? null,
+            ] : null;
             // Ensure camelCase imageUrl is present
             $recipe['imageUrl'] = $recipe['image_url'];
 
@@ -264,12 +325,76 @@ public function getAllRecipes() {
             $stmt->execute([$id]);
             $recipe['micros'] = $stmt->fetchAll(\PDO::FETCH_ASSOC);
 
+            $isMasterpieceFlag = (bool)($recipe['is_masterpiece'] ?? 0)
+                || !empty($recipe['micros'])
+                || str_contains((string)($recipe['notes'] ?? ''), 'Advanced Nutritional Analysis');
+            $recipe['is_masterpiece'] = $isMasterpieceFlag ? 1 : 0;
+            $recipe['isMasterpiece'] = $isMasterpieceFlag;
+
             // 6b. Fetch gallery images (preserving original Emma/primary photo + user additions)
             $recipe['images'] = $this->getRecipeGalleryImages(
                 (int)$id,
                 (string)($recipe['image_url'] ?? ''),
                 (string)($recipe['image_source'] ?? 'none')
             );
+
+            // 6c. Fetch public community variants of this recipe
+            $varStmt = $this->db->prepare("
+                SELECT v.id, v.user_id, v.parent_recipe_id, v.root_recipe_id, v.is_masterpiece, v.variant_summary,
+                       v.title, v.description, v.image_url, v.yields, v.prep_time_mins, v.cook_time_mins,
+                       v.is_wfpb, v.is_oil_free, v.is_gluten_free, v.is_sugar_free,
+                       v.average_rating, v.rating_count, v.created_at,
+                       vu.username AS author_name, vu.display_name AS author_display_name, vu.profile_image AS author_avatar
+                FROM recipes v
+                LEFT JOIN users vu ON v.user_id = vu.id
+                WHERE (v.parent_recipe_id = :pid OR v.root_recipe_id = :rid)
+                  AND v.id != :self_id
+                  AND v.is_public = 1
+                ORDER BY v.is_masterpiece DESC, v.average_rating DESC, v.created_at DESC
+                LIMIT 12
+            ");
+            $varStmt->execute([
+                ':pid' => (int)$id,
+                ':rid' => (int)$id,
+                ':self_id' => (int)$id,
+            ]);
+            $rawVariants = $varStmt->fetchAll(\PDO::FETCH_ASSOC);
+            $recipe['variants'] = array_map(function ($v) use ($recipe) {
+                return [
+                    'id' => (int)$v['id'],
+                    'user_id' => $v['user_id'] ? (int)$v['user_id'] : null,
+                    'authorId' => $v['user_id'] ? (int)$v['user_id'] : null,
+                    'authorName' => $v['author_name'] ?? 'Emma (AI)',
+                    'authorDisplayName' => $v['author_display_name'] ?? null,
+                    'authorAvatar' => $v['author_avatar'] ?? null,
+                    'parent_recipe_id' => (int)$v['parent_recipe_id'],
+                    'parentRecipeId' => (int)$v['parent_recipe_id'],
+                    'root_recipe_id' => $v['root_recipe_id'] ? (int)$v['root_recipe_id'] : null,
+                    'rootRecipeId' => $v['root_recipe_id'] ? (int)$v['root_recipe_id'] : null,
+                    'parentRecipeTitle' => $recipe['title'],
+                    'parentAuthorId' => $recipe['authorId'],
+                    'parentAuthorName' => $recipe['authorName'],
+                    'is_masterpiece' => (bool)$v['is_masterpiece'],
+                    'isMasterpiece' => (bool)$v['is_masterpiece'],
+                    'isVariant' => true,
+                    'variant_summary' => $v['variant_summary'] ?? null,
+                    'variantSummary' => $v['variant_summary'] ?? null,
+                    'title' => $v['title'],
+                    'description' => $v['description'],
+                    'imageUrl' => $v['image_url'],
+                    'image_url' => $v['image_url'],
+                    'yields' => $v['yields'],
+                    'prepTime' => (int)$v['prep_time_mins'],
+                    'cookTime' => (int)$v['cook_time_mins'],
+                    'isWfpb' => (bool)$v['is_wfpb'],
+                    'isOilFree' => (bool)$v['is_oil_free'],
+                    'isGlutenFree' => (bool)$v['is_gluten_free'],
+                    'isSugarFree' => (bool)$v['is_sugar_free'],
+                    'averageRating' => (float)($v['average_rating'] ?? 0),
+                    'ratingCount' => (int)($v['rating_count'] ?? 0),
+                    'createdAt' => $v['created_at'],
+                ];
+            }, $rawVariants);
 
             // 7. Echo the pristine, perfectly structured JSON back to React!
             echo json_encode($recipe);
@@ -1484,7 +1609,9 @@ public function getUserFavorites() {
             $db->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
 
             // Fetch only recipes present in recipe_favorites for this user
-            $sql = "SELECT r.id, r.user_id, r.title, r.description, r.image_url, r.yields, 
+            RecipeVariantService::ensureSchema($db);
+            $sql = "SELECT r.id, r.user_id, r.parent_recipe_id, r.root_recipe_id, r.is_masterpiece, r.variant_summary,
+                           r.title, r.description, r.image_url, r.yields, 
                            r.prep_time_mins, r.cook_time_mins, r.is_wfpb, r.is_oil_free,
                            r.is_gluten_free, r.is_sugar_free,
                            r.is_public, r.image_source, r.created_at, r.average_rating, r.rating_count,
@@ -1492,10 +1619,15 @@ public function getUserFavorites() {
                            u.username AS author_name,
                            u.display_name AS author_display_name,
                            u.profile_image AS author_avatar,
+                           pr.title AS parent_recipe_title,
+                           pr.user_id AS parent_author_id,
+                           pu.username AS parent_author_name,
                            CASE WHEN uf.followed_id IS NOT NULL THEN 1 ELSE 0 END AS is_followed_author
                     FROM recipe_favorites rf
                     JOIN recipes r ON rf.recipe_id = r.id
                     LEFT JOIN users u ON r.user_id = u.id
+                    LEFT JOIN recipes pr ON r.parent_recipe_id = pr.id
+                    LEFT JOIN users pu ON pr.user_id = pu.id
                     LEFT JOIN user_follows uf ON uf.followed_id = r.user_id AND uf.follower_id = ?
                     WHERE rf.user_id = ?
                     ORDER BY rf.created_at DESC";
@@ -1509,10 +1641,24 @@ public function getUserFavorites() {
             }
 
             $formatted = array_map(function($r) use ($userId) {
+                $parentRecipeId = !empty($r['parent_recipe_id']) ? (int)$r['parent_recipe_id'] : null;
+                $rootRecipeId = !empty($r['root_recipe_id']) ? (int)$r['root_recipe_id'] : null;
                 return [
                     'id' => (int)$r['id'],
                     'user_id' => $r['user_id'] ? (int)$r['user_id'] : null,
                     'authorId' => $r['user_id'] ? (int)$r['user_id'] : null,
+                    'parent_recipe_id' => $parentRecipeId,
+                    'parentRecipeId' => $parentRecipeId,
+                    'root_recipe_id' => $rootRecipeId,
+                    'rootRecipeId' => $rootRecipeId,
+                    'is_masterpiece' => (bool)($r['is_masterpiece'] ?? 0),
+                    'isMasterpiece' => (bool)($r['is_masterpiece'] ?? 0),
+                    'isVariant' => $parentRecipeId !== null,
+                    'variant_summary' => $r['variant_summary'] ?? null,
+                    'variantSummary' => $r['variant_summary'] ?? null,
+                    'parentRecipeTitle' => $r['parent_recipe_title'] ?? null,
+                    'parentAuthorId' => !empty($r['parent_author_id']) ? (int)$r['parent_author_id'] : null,
+                    'parentAuthorName' => $parentRecipeId !== null ? ($r['parent_author_name'] ?? 'Emma (AI)') : null,
                     'title' => $r['title'],
                     'authorName' => $r['author_name'] ?? 'Emma (AI)',
                     'authorDisplayName' => $r['author_display_name'] ?? null,
@@ -2266,5 +2412,378 @@ public function getUserFavorites() {
             "message" => "Recipe name updated!",
             "title" => $cleanTitle,
         ]);
+    }
+
+    /**
+     * POST /recipes/create-variant
+     * Creates a user-remixed Recipe Variant ("fork") from an existing parent recipe.
+     * Pricing:
+     *  - 0.5 Tokens: Base Variant (user uploads own photo)
+     *  - 1.0 Token: AI Visual Variant (Emma generates a new AI dish photo)
+     * Optional `include_micros` flags the variant as a Masterpiece Variant (`is_masterpiece = 1`).
+     */
+    public function createRecipeVariant() {
+        $currentUser = $this->requireAuth();
+        $userId = (int)$currentUser['id'];
+        $username = (string)($currentUser['username'] ?? 'Vault Chef');
+
+        RecipeVariantService::ensureSchema($this->db);
+        $this->ensureRecipeImagesTable();
+
+        $data = json_decode(file_get_contents("php://input"), true) ?: [];
+        $parentRecipeId = (int)($data['parent_recipe_id'] ?? 0);
+        $changesRequested = trim((string)($data['changes_requested'] ?? ''));
+        $customTitle = trim((string)($data['title'] ?? ''));
+        $imageMode = ($data['image_mode'] ?? 'upload') === 'ai' ? 'ai' : 'upload';
+        $uploadedImage = trim((string)($data['uploaded_image'] ?? ''));
+        $imageStyleOptions = is_array($data['image_style_options'] ?? null) ? $data['image_style_options'] : [];
+        $includeMicros = !empty($data['include_micros']);
+
+        $tokenCost = $imageMode === 'ai' ? 1.0 : 0.5;
+
+        if ($parentRecipeId <= 0) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Parent recipe ID is required."]);
+            return;
+        }
+
+        // Profanity filter check on requested modification text and custom title
+        $profanity = new ProfanityFilterService();
+        $profanity->assertClean($changesRequested, 'variant changes');
+        if ($customTitle !== '') {
+            $profanity->assertClean($customTitle, 'variant title');
+        }
+
+        $variantService = new RecipeVariantService($this->db);
+        $preCheckError = $variantService->validateMeaningfulRequestText($changesRequested);
+        if ($preCheckError !== null) {
+            http_response_code(422);
+            echo json_encode([
+                "success" => false,
+                "trivialChange" => true,
+                "message" => $preCheckError,
+            ]);
+            return;
+        }
+
+        // Verify user token balance before running external AI calls
+        $userStmt = $this->db->prepare("SELECT generation_tokens, allergies FROM users WHERE id = ? LIMIT 1");
+        $userStmt->execute([$userId]);
+        $userRow = $userStmt->fetch(\PDO::FETCH_ASSOC);
+        $currentTokens = $userRow ? (float)$userRow['generation_tokens'] : 0.0;
+        $userAllergies = (string)($userRow['allergies'] ?? '');
+
+        if ($currentTokens < $tokenCost) {
+            http_response_code(403);
+            echo json_encode([
+                "success" => false,
+                "insufficientTokens" => true,
+                "requiredTokens" => $tokenCost,
+                "currentTokens" => $currentTokens,
+                "message" => sprintf(
+                    "Oh dear! You need %.1f tokens to create this variant, but your balance is %.2f tokens.",
+                    $tokenCost,
+                    $currentTokens
+                ),
+            ]);
+            return;
+        }
+
+        // Load parent recipe
+        $parentStmt = $this->db->prepare("
+            SELECT r.*, u.username AS author_name
+            FROM recipes r
+            LEFT JOIN users u ON r.user_id = u.id
+            WHERE r.id = ?
+            LIMIT 1
+        ");
+        $parentStmt->execute([$parentRecipeId]);
+        $parentRecipe = $parentStmt->fetch(\PDO::FETCH_ASSOC);
+
+        if (!$parentRecipe) {
+            http_response_code(404);
+            echo json_encode(["success" => false, "message" => "Original parent recipe not found."]);
+            return;
+        }
+
+        $isAdmin = !empty($_SESSION['is_admin']);
+        if (empty($parentRecipe['is_public']) && (int)($parentRecipe['user_id'] ?? 0) !== $userId && !$isAdmin) {
+            http_response_code(403);
+            echo json_encode(["success" => false, "message" => "You cannot create a variant of a private draft recipe."]);
+            return;
+        }
+
+        $ingStmt = $this->db->prepare("SELECT quantity, unit, ingredient_name FROM ingredients WHERE recipe_id = ?");
+        $ingStmt->execute([$parentRecipeId]);
+        $parentRecipe['ingredients'] = $ingStmt->fetchAll(\PDO::FETCH_ASSOC);
+
+        $instStmt = $this->db->prepare("SELECT step_number, instruction_text FROM instructions WHERE recipe_id = ? ORDER BY step_number ASC");
+        $instStmt->execute([$parentRecipeId]);
+        $parentRecipe['instructions'] = $instStmt->fetchAll(\PDO::FETCH_ASSOC);
+
+        // If user chose 'upload' (0.5 tokens), validate and moderate their uploaded image first
+        $validatedUploadBytes = null;
+        $validatedUploadExt = null;
+        if ($imageMode === 'upload') {
+            if ($uploadedImage === '') {
+                http_response_code(400);
+                echo json_encode([
+                    "success" => false,
+                    "message" => "Please upload a dish photo for the 0.5-token Base Variant, or switch to 'Generate AI Image with Emma' (1.0 token).",
+                ]);
+                return;
+            }
+
+            $base64Body = $uploadedImage;
+            if (strpos($uploadedImage, 'data:image') === 0) {
+                $parts = explode(';', $uploadedImage, 2);
+                $dataParts = explode(',', $parts[1] ?? '', 2);
+                $base64Body = $dataParts[1] ?? '';
+            }
+            $decodedData = base64_decode($base64Body, true);
+            $imgInfo = ($decodedData !== false && !empty($decodedData) && strlen($decodedData) <= 10 * 1024 * 1024)
+                ? @getimagesizefromstring($decodedData)
+                : false;
+            $mimeToExt = [
+                'image/jpeg' => 'jpg',
+                'image/png' => 'png',
+                'image/webp' => 'webp',
+                'image/gif' => 'gif',
+            ];
+            if ($imgInfo === false || !isset($mimeToExt[$imgInfo['mime'] ?? ''])) {
+                http_response_code(400);
+                echo json_encode(["success" => false, "message" => "Invalid uploaded image format. Please choose a JPG, PNG, or WebP photo."]);
+                return;
+            }
+
+            (new ImageModerationService())->assertImageSafe($decodedData, $imgInfo['mime'], 'recipe');
+            $validatedUploadBytes = $decodedData;
+            $validatedUploadExt = $mimeToExt[$imgInfo['mime']];
+        }
+
+        // Generate variant diff with Gemini (includes anti-clout-stealing verification)
+        $diffResult = $variantService->generateVariantDiff(
+            $parentRecipe,
+            $changesRequested,
+            $customTitle,
+            $includeMicros,
+            $userAllergies
+        );
+
+        if (empty($diffResult['success'])) {
+            http_response_code((int)($diffResult['status'] ?? 422));
+            echo json_encode([
+                "success" => false,
+                "trivialChange" => !empty($diffResult['trivialChange']),
+                "message" => $diffResult['message'] ?? 'Could not generate recipe variant.',
+            ]);
+            return;
+        }
+
+        $variant = $diffResult['variant'];
+        $profanity->assertClean($variant['title'], 'variant title');
+
+        // Run deterministic USDA FoodData Central calculation on the modified ingredients
+        $usdaResult = null;
+        try {
+            $usdaService = new UsdaNutritionService($this->db);
+            $usdaCandidate = $usdaService->calculateRecipeNutrition($variant['ingredients'], $variant['yields']);
+            if (!empty($usdaCandidate['success'])) {
+                $usdaResult = $usdaCandidate;
+            }
+        } catch (\Throwable $e) {
+            error_log('USDA calculation skipped on createRecipeVariant: ' . $e->getMessage());
+        }
+
+        // If AI image mode (1.0 token), generate the AI image BEFORE opening transaction or deducting tokens
+        $finalImageBytes = $validatedUploadBytes;
+        $finalImageExt = $validatedUploadExt;
+        $finalImageSource = 'user';
+
+        if ($imageMode === 'ai') {
+            $aiImg = $variantService->generateVariantAiImage(
+                $variant['title'],
+                $variant['image_prompt'] ?: $variant['title'],
+                $imageStyleOptions
+            );
+            if (empty($aiImg['ok']) || empty($aiImg['bytes'])) {
+                http_response_code(502);
+                echo json_encode([
+                    "success" => false,
+                    "message" => ($aiImg['message'] ?? "Emma's camera jammed while painting your variant!") . " No tokens were deducted — please try again.",
+                ]);
+                return;
+            }
+            $finalImageBytes = $aiImg['bytes'];
+            $finalImageExt = $aiImg['ext'] ?? 'jpg';
+            $finalImageSource = 'ai';
+        }
+
+        // Write image file to /public/images/
+        $uploadDir = __DIR__ . '/../../public/images/';
+        if (!is_dir($uploadDir)) {
+            mkdir($uploadDir, 0755, true);
+        }
+        $prefix = $finalImageSource === 'ai' ? 'ai_variant_' : 'user_variant_';
+        $filename = time() . '_' . bin2hex(random_bytes(4)) . '_' . $prefix . $parentRecipeId . '.' . $finalImageExt;
+        if (file_put_contents($uploadDir . $filename, $finalImageBytes) === false) {
+            http_response_code(500);
+            echo json_encode(["success" => false, "message" => "Failed to save variant image to disk. No tokens were deducted."]);
+            return;
+        }
+        $finalImageUrl = '/images/' . $filename;
+
+        $rootRecipeId = !empty($parentRecipe['root_recipe_id'])
+            ? (int)$parentRecipe['root_recipe_id']
+            : (int)$parentRecipe['id'];
+        $isMasterpiece = $includeMicros ? 1 : 0;
+        $notes = ($includeMicros && $variant['deep_dive'] !== '')
+            ? "### Advanced Nutritional Analysis\n" . $variant['deep_dive']
+            : '';
+
+        // Atomic MySQL Transaction: Lock user balance, deduct tokens, insert variant recipe & relations, notify parent author
+        try {
+            $this->db->beginTransaction();
+
+            $lockStmt = $this->db->prepare("SELECT generation_tokens FROM users WHERE id = ? FOR UPDATE");
+            $lockStmt->execute([$userId]);
+            $lockedBalance = (float)$lockStmt->fetchColumn();
+
+            if ($lockedBalance < $tokenCost) {
+                $this->db->rollBack();
+                @unlink($uploadDir . $filename);
+                http_response_code(403);
+                echo json_encode([
+                    "success" => false,
+                    "insufficientTokens" => true,
+                    "message" => "Insufficient token balance to complete variant creation.",
+                ]);
+                return;
+            }
+
+            $newBalance = round($lockedBalance - $tokenCost, 2);
+            $deductStmt = $this->db->prepare("UPDATE users SET generation_tokens = :bal WHERE id = :id");
+            $deductStmt->execute([':bal' => $newBalance, ':id' => $userId]);
+
+            $insRecipe = $this->db->prepare("
+                INSERT INTO recipes (
+                    user_id, parent_recipe_id, root_recipe_id, title, description, variant_summary,
+                    notes, image_url, yields, prep_time_mins, cook_time_mins,
+                    is_wfpb, is_oil_free, is_gluten_free, is_sugar_free,
+                    is_public, is_masterpiece, image_source
+                ) VALUES (
+                    :user_id, :parent_id, :root_id, :title, :description, :variant_summary,
+                    :notes, :image_url, :yields, :prep_time, :cook_time,
+                    1, :is_oil_free, :is_gluten_free, :is_sugar_free,
+                    1, :is_masterpiece, :image_source
+                )
+            ");
+            $insRecipe->execute([
+                ':user_id' => $userId,
+                ':parent_id' => $parentRecipeId,
+                ':root_id' => $rootRecipeId,
+                ':title' => $variant['title'],
+                ':description' => $variant['description'],
+                ':variant_summary' => $variant['variant_summary'],
+                ':notes' => $notes,
+                ':image_url' => $finalImageUrl,
+                ':yields' => $variant['yields'],
+                ':prep_time' => $variant['prep_time_mins'],
+                ':cook_time' => $variant['cook_time_mins'],
+                ':is_oil_free' => $variant['is_oil_free'],
+                ':is_gluten_free' => $variant['is_gluten_free'],
+                ':is_sugar_free' => $variant['is_sugar_free'],
+                ':is_masterpiece' => $isMasterpiece,
+                ':image_source' => $finalImageSource,
+            ]);
+
+            $newVariantId = (int)$this->db->lastInsertId();
+
+            // Seed gallery photo & auto-vault into user's favorites
+            $imgGalleryStmt = $this->db->prepare("INSERT INTO recipe_images (recipe_id, user_id, image_url, source) VALUES (?, ?, ?, ?)");
+            $imgGalleryStmt->execute([$newVariantId, $userId, $finalImageUrl, $finalImageSource]);
+
+            $favStmt = $this->db->prepare("INSERT IGNORE INTO recipe_favorites (user_id, recipe_id) VALUES (?, ?)");
+            $favStmt->execute([$userId, $newVariantId]);
+
+            // Insert instructions
+            $instIns = $this->db->prepare("INSERT INTO instructions (recipe_id, step_number, instruction_text) VALUES (?, ?, ?)");
+            foreach ($variant['instructions'] as $idx => $stepText) {
+                $instIns->execute([$newVariantId, $idx + 1, $stepText]);
+            }
+
+            // Insert ingredients
+            $ingIns = $this->db->prepare("INSERT INTO ingredients (recipe_id, quantity, unit, ingredient_name) VALUES (?, 0.00, '', ?)");
+            foreach ($variant['ingredients'] as $ingLine) {
+                $ingIns->execute([$newVariantId, $ingLine]);
+            }
+
+            // Insert macros & (if requested) micros
+            $macrosToSave = ($usdaResult && !empty($usdaResult['macros']))
+                ? $usdaResult['macros']
+                : [
+                    'calories' => (float)($variant['macros']['calories'] ?? 0),
+                    'protein_g' => (float)($variant['macros']['protein_g'] ?? 0),
+                    'carbs_g' => (float)($variant['macros']['carbs_g'] ?? 0),
+                    'fat_g' => (float)($variant['macros']['fat_g'] ?? 0),
+                    'fiber_g' => (float)($variant['macros']['fiber_g'] ?? 0),
+                    'math_calculations' => '',
+                ];
+
+            $microsToSave = null;
+            if ($includeMicros) {
+                $microsToSave = ($usdaResult && !empty($usdaResult['micros']))
+                    ? $usdaResult['micros']
+                    : $variant['micros'];
+            }
+
+            $this->replaceNutritionRowsInDb($newVariantId, $macrosToSave, $microsToSave);
+
+            // Creator notification (skip if user forked their own recipe)
+            $parentOwnerId = !empty($parentRecipe['user_id']) ? (int)$parentRecipe['user_id'] : 0;
+            $parentTitle = (string)($parentRecipe['title'] ?? 'your recipe');
+            if ($parentOwnerId > 0 && $parentOwnerId !== $userId) {
+                $notifMsg = mb_substr(
+                    sprintf('%s created a variant ("%s") of your recipe "%s"', $username, $variant['title'], $parentTitle),
+                    0,
+                    255
+                );
+                $notifStmt = $this->db->prepare("
+                    INSERT INTO notifications (user_id, actor_user_id, actor_username, recipe_id, comment_id, type, message)
+                    VALUES (:uid, :actor_id, :actor_name, :rid, NULL, 'recipe_variant', :msg)
+                ");
+                $notifStmt->execute([
+                    ':uid' => $parentOwnerId,
+                    ':actor_id' => $userId,
+                    ':actor_name' => $username,
+                    ':rid' => $newVariantId,
+                    ':msg' => $notifMsg,
+                ]);
+            }
+
+            $this->db->commit();
+            $_SESSION['generation_tokens'] = $newBalance;
+
+            echo json_encode([
+                "success" => true,
+                "recipeId" => $newVariantId,
+                "tokensRemaining" => $newBalance,
+                "tokensSpent" => $tokenCost,
+                "isMasterpiece" => (bool)$isMasterpiece,
+                "message" => $isMasterpiece
+                    ? "Smashing! Your Masterpiece Variant has been forged and published to the Vault!"
+                    : "Brilliant! Your Recipe Variant has been forged and published to the Vault!",
+            ]);
+        } catch (\Exception $e) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            @unlink($uploadDir . $filename);
+            http_response_code(500);
+            echo json_encode([
+                "success" => false,
+                "message" => "Database error while saving variant (no tokens were deducted): " . $e->getMessage(),
+            ]);
+        }
     }
 }
