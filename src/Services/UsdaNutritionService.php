@@ -169,18 +169,43 @@ class UsdaNutritionService {
             ];
         }
 
-        // Deduplicate queries and fetch per-100g profiles (cache first, parallel FDC search for misses)
+        // Deduplicate queries + fallback alternatives and fetch per-100g profiles
         $uniqueQueries = [];
         foreach ($measurable as $item) {
             $key = $this->normalizeQueryKey($item['usda_query']);
             if ($key !== '' && !isset($uniqueQueries[$key])) {
-                $uniqueQueries[$key] = $item['usda_query'];
+                $uniqueQueries[$key] = [
+                    'query' => $item['usda_query'],
+                    'fallback' => trim((string)($item['fallback_query'] ?? '')),
+                ];
             }
         }
 
         $batchResult = $this->lookupFoodsBatch($uniqueQueries);
         $foodProfiles = $batchResult['profiles'] ?? [];
         $rateLimited = !empty($batchResult['rateLimited']);
+
+        // Layer 4: If any ingredients still lack a USDA or closest-alternative match, ask Emma (Gemini) for per-100g estimates
+        $unmatchedByKey = [];
+        foreach ($measurable as $item) {
+            $key = $this->normalizeQueryKey($item['usda_query']);
+            if ($key !== '' && empty($foodProfiles[$key]['per100g']) && !isset($unmatchedByKey[$key])) {
+                $unmatchedByKey[$key] = [
+                    'key' => $key,
+                    'original' => $item['original'],
+                    'label' => $item['usda_query'],
+                ];
+            }
+        }
+
+        $emmaFallbackCount = 0;
+        if (!empty($unmatchedByKey) && $this->geminiApiKey !== '') {
+            $emmaProfiles = $this->estimateUnmatchedWithEmma(array_values($unmatchedByKey));
+            foreach ($emmaProfiles as $eKey => $eProfile) {
+                $foodProfiles[$eKey] = $eProfile;
+                $emmaFallbackCount++;
+            }
+        }
 
         $totalCalories = 0.0;
         $totalProtein = 0.0;
@@ -235,13 +260,16 @@ class UsdaNutritionService {
             $totalFat += $itemFat;
             $totalFiber += $itemFib;
 
+            $isEmmaFallback = ($profile['data_type'] ?? '') === 'Emma Estimate';
+            $sourceLabel = $item['usda_query'] . ($isEmmaFallback ? ' [Emma est.]' : '');
+
             foreach (self::TRACKED_MICROS as $spec) {
                 $mName = $spec['name'];
                 $mVal = (float)($p['micros'][$mName] ?? 0.0) * $factor;
                 $microTotals[$mName] += $mVal;
                 if ($mVal > 0.01) {
                     $microTopContributors[$mName][] = [
-                        'label' => $item['usda_query'],
+                        'label' => $sourceLabel,
                         'amount' => $mVal,
                     ];
                 }
@@ -290,30 +318,36 @@ class UsdaNutritionService {
         $perServingFat = round($totalFat / $servings, 1);
         $perServingFib = round($totalFiber / $servings, 1);
 
-        // Build top contributor summary for audit transparency in NutritionPanel
+        // Build full matched ingredient contributor summary for NutritionPanel breakdown
         $matchedRows = array_values(array_filter($breakdown, fn($b) => !empty($b['matched'])));
         usort($matchedRows, fn($a, $b) => ($b['calories'] <=> $a['calories']));
         $topSummaryParts = array_map(
             fn($r) => sprintf(
-                '%sg %s (%sg C / %sg F / %sg P per srv)',
+                '%sg %s%s (%sg C / %sg F / %sg P per srv)',
                 $r['grams'],
                 $r['usda_query'],
+                ($r['data_type'] ?? '') === 'Emma Estimate' ? ' [Emma est.]' : '',
                 $r['carbs_g'],
                 $r['fat_g'],
                 $r['protein_g']
             ),
-            array_slice($matchedRows, 0, 5)
+            $matchedRows
         );
         $servingsLabel = (abs($servings - round($servings)) < 0.01)
             ? (string)(int)round($servings)
             : (string)round($servings, 1);
 
+        $emmaCountUsed = count(array_filter($matchedRows, fn($r) => ($r['data_type'] ?? '') === 'Emma Estimate'));
+        $usdaCountUsed = $matchedCount - $emmaCountUsed;
+        $matchNote = $emmaCountUsed > 0
+            ? sprintf('%d/%d matched, %d USDA + %d Emma est.', $matchedCount, $totalMeasurable, $usdaCountUsed, $emmaCountUsed)
+            : sprintf('%d/%d ingredients matched', $matchedCount, $totalMeasurable);
+
         $mathSummary = sprintf(
-            'USDA FoodData Central (%s %s, %d/%d ingredients matched): %s',
+            'USDA FoodData Central (%s %s, %s): %s',
             $servingsLabel,
             $servings == 1.0 ? 'serving' : 'servings',
-            $matchedCount,
-            $totalMeasurable,
+            $matchNote,
             implode('; ', $topSummaryParts)
         );
 
@@ -444,13 +478,22 @@ class UsdaNutritionService {
             $numbered[] = ($idx + 1) . '. ' . $line;
         }
 
-        $prompt = "Convert each recipe ingredient line below into a clean generic USDA FoodData Central search query and an accurate metric weight in grams for the ENTIRE batch quantity stated in the line.\n\n"
+        $prompt = "Convert each recipe ingredient line below into a clean generic USDA FoodData Central search query, a closest generic USDA fallback query, and an accurate metric weight in grams for the ENTIRE batch quantity stated in the line.\n\n"
             . "CRITICAL CONVERSION RULES:\n"
             . "1. Exact weight conversions: 1 oz = 28.35g (e.g. 14 oz tofu = 397g; 14-16 oz = 425g), 1 lb = 453.6g, 1 kg = 1000g.\n"
             . "2. Match raw vs cooked vs dry to how the ingredient is measured (e.g. '1 cup cooked chickpeas' -> usda_query 'chickpeas, cooked', grams 164; '1 can (15 oz) chickpeas, drained' -> 'chickpeas, canned, drained solids', grams 240; '8 oz dry rice noodles' -> 'rice noodles, dry', grams 227; '1 cup light coconut milk' -> 'coconut milk, canned, light', grams 240).\n"
-            . "3. Preserve fat/firmness/type modifiers in usda_query: 'tofu, extra firm', 'tofu, firm', 'tofu, silken', 'tempeh', 'tahini, sesame butter', 'coconut milk, light', 'nutritional yeast', 'soy sauce'. Strip prep verbs (pressed, diced, minced, smashed, charred).\n"
+            . "3. Use official USDA naming for WFPB specialty pantry items AND supply a close USDA generic fallback_query:\n"
+            . "   - 'low-sodium tamari' / 'reduced-sodium tamari' -> usda_query 'soy sauce, reduced sodium', fallback_query 'tamari'\n"
+            . "   - 'tamari' -> usda_query 'tamari', fallback_query 'soy sauce, reduced sodium'\n"
+            . "   - 'coconut aminos' -> usda_query 'coconut aminos', fallback_query 'soy sauce, reduced sodium'\n"
+            . "   - 'nutritional yeast' -> usda_query 'nutritional yeast', fallback_query 'yeast'\n"
+            . "   - 'mushroom seasoning paste' -> usda_query 'mushroom seasoning', fallback_query 'mushrooms, shiitake, dried'\n"
+            . "   - 'miso paste' -> usda_query 'miso', fallback_query 'soy sauce, reduced sodium'\n"
+            . "   - 'liquid aminos' -> usda_query 'liquid aminos', fallback_query 'soy sauce'\n"
+            . "   - Preserve 'tofu, extra firm', 'tofu, firm', 'tofu, silken', 'tempeh', 'tahini, sesame butter', 'coconut milk, light'. Strip prep verbs (pressed, diced, minced, smashed, charred).\n"
+            . "   - For everyday whole foods already in USDA (e.g. 'broccoli, raw'), fallback_query can be empty string \"\".\n"
             . "4. If 'A or B' appears, calculate using A only.\n"
-            . "5. Common volume/piece weights: 1 tbsp olive/sesame/other = ~14g, 1 tbsp herbs chopped = ~4g, 1 tbsp lemon/lime juice/vinegar/soy sauce/tamari = 15g, 1 tbsp tomato paste = 16g, 1 tbsp tahini/nut butter = 16g, 1 clove garlic = 3g, 1 medium potato = 170g, 1 lb baby potatoes = 454g, 1 cup raw leafy greens/herbs = 30g, 1 cup brussels sprouts = 88g.\n"
+            . "5. Common volume/piece weights: 1 tbsp olive/sesame/other = ~14g, 1 tbsp herbs chopped = ~4g, 1 tbsp lemon/lime juice/vinegar/soy sauce/tamari/coconut aminos = 15g, 1 tbsp tomato paste/miso/mushroom paste = 16g, 1 tbsp tahini/nut butter = 16g, 1 tbsp nutritional yeast = 5g, 1 clove garlic = 3g, 1 medium potato = 170g, 1 lb baby potatoes = 454g, 1 cup raw leafy greens/herbs = 30g, 1 cup brussels sprouts = 88g.\n"
             . "6. Salt/black pepper 'to taste' -> small realistic pinch (salt 0.5g, black pepper 0.3g). Water -> grams 0.\n\n"
             . "Ingredients:\n" . implode("\n", $numbered);
 
@@ -471,9 +514,10 @@ class UsdaNutritionService {
                                 'properties' => [
                                     'original' => ['type' => 'STRING'],
                                     'usda_query' => ['type' => 'STRING'],
+                                    'fallback_query' => ['type' => 'STRING'],
                                     'grams' => ['type' => 'NUMBER'],
                                 ],
-                                'required' => ['original', 'usda_query', 'grams'],
+                                'required' => ['original', 'usda_query', 'fallback_query', 'grams'],
                             ],
                         ],
                     ],
@@ -526,11 +570,13 @@ class UsdaNutritionService {
             }
             $orig = trim((string)($it['original'] ?? ($lines[$idx] ?? '')));
             $query = trim((string)($it['usda_query'] ?? ''));
+            $fallbackQuery = trim((string)($it['fallback_query'] ?? ''));
             $grams = max(0.0, (float)($it['grams'] ?? 0));
             if ($orig !== '' && $query !== '') {
                 $normalized[] = [
                     'original' => $orig,
                     'usda_query' => $query,
+                    'fallback_query' => $fallbackQuery,
                     'grams' => $grams,
                 ];
             }
@@ -598,6 +644,7 @@ class UsdaNutritionService {
         return [
             'original' => $line,
             'usda_query' => $query ?: $line,
+            'fallback_query' => '',
             'grams' => round($grams, 1),
         ];
     }
@@ -609,14 +656,15 @@ class UsdaNutritionService {
     }
 
     /**
-     * Checks local cache first, then batch-fetches uncached queries from USDA FDC in parallel.
+     * Checks local cache first, then batch-fetches uncached queries from USDA FDC across:
+     * Pass 1 (Foundation/SR Legacy/Survey), Pass 2 (Branded), Pass 3 (closest fallback_query).
      */
-    private function lookupFoodsBatch(array $uniqueQueries): array {
+    private function lookupFoodsBatch(array $uniqueItems): array {
         $this->ensureCacheTable();
         $results = [];
         $misses = [];
 
-        $keys = array_keys($uniqueQueries);
+        $keys = array_keys($uniqueItems);
         if (!empty($keys)) {
             $placeholders = implode(',', array_fill(0, count($keys), '?'));
             $stmt = $this->db->prepare("SELECT query_key, fdc_id, description, data_type, nutrients_json FROM usda_food_cache WHERE query_key IN ($placeholders)");
@@ -634,9 +682,9 @@ class UsdaNutritionService {
             }
         }
 
-        foreach ($uniqueQueries as $key => $queryText) {
+        foreach ($uniqueItems as $key => $spec) {
             if (!isset($results[$key])) {
-                $misses[$key] = $queryText;
+                $misses[$key] = $spec['query'];
             }
         }
 
@@ -656,7 +704,7 @@ class UsdaNutritionService {
             }
             $foods = $pass1Responses[$key]['foods'] ?? [];
             $candidate = $this->selectBestCandidate($queryText, $foods);
-            if ($candidate && $candidate['score'] >= 12.0) {
+            if ($candidate && $candidate['score'] >= 16.0) {
                 $bestPass1[$key] = $candidate;
             } else {
                 if ($candidate) {
@@ -668,9 +716,9 @@ class UsdaNutritionService {
             }
         }
 
-        // Pass 2: Fallback to Branded only for items without a valid Pass 1 hit
+        // Pass 2: Fallback to Branded only for items without a strong Pass 1 hit
         $pass2Responses = !empty($pass2Queue)
-            ? $this->multiPostUsdaSearch($pass2Queue, ['Branded'], 8)
+            ? $this->multiPostUsdaSearch($pass2Queue, ['Branded'], 10)
             : [];
 
         $cacheInsert = $this->db->prepare("
@@ -683,6 +731,7 @@ class UsdaNutritionService {
                 nutrients_json = VALUES(nutrients_json)
         ");
 
+        $pass3Queue = [];
         foreach ($misses as $key => $queryText) {
             if (!empty($pass2Responses[$key]['rateLimited'])) {
                 $anyRateLimited = true;
@@ -716,10 +765,234 @@ class UsdaNutritionService {
                 } catch (\Throwable $e) {
                     error_log('USDA cache write skipped: ' . $e->getMessage());
                 }
+            } elseif (!$anyRateLimited) {
+                $fbQuery = trim((string)($uniqueItems[$key]['fallback'] ?? ''));
+                if ($fbQuery !== '' && $this->normalizeQueryKey($fbQuery) !== $key) {
+                    $pass3Queue[$key] = $fbQuery;
+                }
+            }
+        }
+
+        // Pass 3: Try closest USDA generic alternative (cache first, then multi-datatype search)
+        if (!empty($pass3Queue)) {
+            $fbKeyToOrigKeys = [];
+            $fbUnique = [];
+            foreach ($pass3Queue as $origKey => $fbQuery) {
+                $fbKey = $this->normalizeQueryKey($fbQuery);
+                $fbKeyToOrigKeys[$fbKey][] = $origKey;
+                $fbUnique[$fbKey] = $fbQuery;
+            }
+
+            $fbKeys = array_keys($fbUnique);
+            $placeholders = implode(',', array_fill(0, count($fbKeys), '?'));
+            $stmt = $this->db->prepare("SELECT query_key, fdc_id, description, data_type, nutrients_json FROM usda_food_cache WHERE query_key IN ($placeholders)");
+            $stmt->execute($fbKeys);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $decoded = json_decode((string)$row['nutrients_json'], true);
+                if (is_array($decoded)) {
+                    foreach ($fbKeyToOrigKeys[$row['query_key']] ?? [] as $origKey) {
+                        $results[$origKey] = [
+                            'fdc_id' => (int)$row['fdc_id'],
+                            'description' => $row['description'],
+                            'data_type' => $row['data_type'],
+                            'per100g' => $decoded,
+                        ];
+                    }
+                }
+                unset($fbUnique[$row['query_key']]);
+            }
+
+            if (!empty($fbUnique)) {
+                $pass3Responses = $this->multiPostUsdaSearch(
+                    $fbUnique,
+                    ['Foundation', 'SR Legacy', 'Survey (FNDDS)', 'Branded'],
+                    12
+                );
+                foreach ($fbUnique as $fbKey => $fbQuery) {
+                    if (!empty($pass3Responses[$fbKey]['rateLimited'])) {
+                        $anyRateLimited = true;
+                    }
+                    $candidate = $this->selectBestCandidate($fbQuery, $pass3Responses[$fbKey]['foods'] ?? []);
+                    if ($candidate && $candidate['score'] >= 10.0) {
+                        $per100g = $this->extractPer100gNutrients($candidate['food']);
+                        $profile = [
+                            'fdc_id' => (int)($candidate['food']['fdcId'] ?? 0),
+                            'description' => (string)($candidate['food']['description'] ?? $fbQuery),
+                            'data_type' => (string)($candidate['food']['dataType'] ?? 'SR Legacy'),
+                            'per100g' => $per100g,
+                        ];
+                        foreach ($fbKeyToOrigKeys[$fbKey] ?? [] as $origKey) {
+                            $results[$origKey] = $profile;
+                            try {
+                                $cacheInsert->execute([
+                                    $origKey,
+                                    $profile['fdc_id'],
+                                    mb_substr($profile['description'], 0, 255),
+                                    mb_substr($profile['data_type'], 0, 64),
+                                    json_encode($per100g),
+                                ]);
+                            } catch (\Throwable $e) {
+                                error_log('USDA fallback cache write skipped: ' . $e->getMessage());
+                            }
+                        }
+                    }
+                }
             }
         }
 
         return ['profiles' => $results, 'rateLimited' => $anyRateLimited];
+    }
+
+    /**
+     * Layer 4 fallback: asks Emma (Gemini) for per-100g macro and micronutrient profiles ONLY for
+     * ingredients that could not be matched in USDA FoodData Central or its closest-alternative pass.
+     */
+    private function estimateUnmatchedWithEmma(array $unmatchedItems): array {
+        if (empty($unmatchedItems) || $this->geminiApiKey === '') {
+            return [];
+        }
+
+        $listLines = [];
+        foreach ($unmatchedItems as $idx => $item) {
+            $listLines[] = sprintf(
+                '%d. key="%s" | ingredient="%s"',
+                $idx + 1,
+                $item['key'],
+                $item['original']
+            );
+        }
+
+        $prompt = "Provide accurate culinary/nutritionist per-100g values (NOT per recipe — strictly per 100 grams of each edible ingredient) for these plant-based ingredients that were absent from USDA searches:\n\n"
+            . implode("\n", $listLines);
+
+        $payload = [
+            'contents' => [
+                ['role' => 'user', 'parts' => [['text' => $prompt]]],
+            ],
+            'generationConfig' => [
+                'temperature' => 0.1,
+                'responseMimeType' => 'application/json',
+                'responseSchema' => [
+                    'type' => 'OBJECT',
+                    'properties' => [
+                        'items' => [
+                            'type' => 'ARRAY',
+                            'items' => [
+                                'type' => 'OBJECT',
+                                'properties' => [
+                                    'key' => ['type' => 'STRING'],
+                                    'calories' => ['type' => 'NUMBER'],
+                                    'protein_g' => ['type' => 'NUMBER'],
+                                    'carbs_g' => ['type' => 'NUMBER'],
+                                    'fat_g' => ['type' => 'NUMBER'],
+                                    'fiber_g' => ['type' => 'NUMBER'],
+                                    'dietary_fiber_g' => ['type' => 'NUMBER'],
+                                    'sodium_mg' => ['type' => 'NUMBER'],
+                                    'saturated_fat_g' => ['type' => 'NUMBER'],
+                                    'potassium_mg' => ['type' => 'NUMBER'],
+                                    'iron_mg' => ['type' => 'NUMBER'],
+                                    'calcium_mg' => ['type' => 'NUMBER'],
+                                    'magnesium_mg' => ['type' => 'NUMBER'],
+                                    'zinc_mg' => ['type' => 'NUMBER'],
+                                    'vitamin_c_mg' => ['type' => 'NUMBER'],
+                                    'vitamin_a_mcg' => ['type' => 'NUMBER'],
+                                    'folate_mcg' => ['type' => 'NUMBER'],
+                                    'vitamin_k_mcg' => ['type' => 'NUMBER'],
+                                    'vitamin_b6_mg' => ['type' => 'NUMBER'],
+                                    'vitamin_e_mg' => ['type' => 'NUMBER'],
+                                    'vitamin_b12_mcg' => ['type' => 'NUMBER'],
+                                ],
+                                'required' => [
+                                    'key', 'calories', 'protein_g', 'carbs_g', 'fat_g', 'fiber_g',
+                                    'dietary_fiber_g', 'sodium_mg', 'saturated_fat_g',
+                                ],
+                            ],
+                        ],
+                    ],
+                    'required' => ['items'],
+                ],
+            ],
+        ];
+
+        $url = self::GEMINI_BASE . '/v1beta/models/' . self::NORMALIZER_MODEL . ':generateContent';
+        $ch = curl_init($url);
+        $opts = [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode($payload),
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'x-goog-api-key: ' . $this->geminiApiKey,
+            ],
+            CURLOPT_TIMEOUT => 20,
+            CURLOPT_CONNECTTIMEOUT => 8,
+        ];
+        if ($this->caBundle !== null) {
+            $opts[CURLOPT_CAINFO] = $this->caBundle;
+        }
+        curl_setopt_array($ch, $opts);
+        $raw = curl_exec($ch);
+        $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($raw === false || $httpCode < 200 || $httpCode >= 300) {
+            return [];
+        }
+
+        $decoded = json_decode($raw, true);
+        $text = $decoded['candidates'][0]['content']['parts'][0]['text'] ?? '';
+        if ($text === '') {
+            return [];
+        }
+
+        $parsed = json_decode($text, true);
+        $rows = $parsed['items'] ?? null;
+        if (!is_array($rows)) {
+            return [];
+        }
+
+        $profiles = [];
+        foreach ($rows as $row) {
+            if (!is_array($row) || empty($row['key'])) {
+                continue;
+            }
+            $k = $this->normalizeQueryKey((string)$row['key']);
+            $fiber = max(0.0, (float)($row['dietary_fiber_g'] ?? $row['fiber_g'] ?? 0));
+
+            $micros = [
+                'Dietary Fiber' => round($fiber, 4),
+                'Sodium' => round(max(0.0, (float)($row['sodium_mg'] ?? 0)), 4),
+                'Saturated Fat' => round(max(0.0, (float)($row['saturated_fat_g'] ?? 0)), 4),
+                'Potassium' => round(max(0.0, (float)($row['potassium_mg'] ?? 0)), 4),
+                'Iron' => round(max(0.0, (float)($row['iron_mg'] ?? 0)), 4),
+                'Calcium' => round(max(0.0, (float)($row['calcium_mg'] ?? 0)), 4),
+                'Magnesium' => round(max(0.0, (float)($row['magnesium_mg'] ?? 0)), 4),
+                'Zinc' => round(max(0.0, (float)($row['zinc_mg'] ?? 0)), 4),
+                'Vitamin C' => round(max(0.0, (float)($row['vitamin_c_mg'] ?? 0)), 4),
+                'Vitamin A' => round(max(0.0, (float)($row['vitamin_a_mcg'] ?? 0)), 4),
+                'Folate' => round(max(0.0, (float)($row['folate_mcg'] ?? 0)), 4),
+                'Vitamin K' => round(max(0.0, (float)($row['vitamin_k_mcg'] ?? 0)), 4),
+                'Vitamin B6' => round(max(0.0, (float)($row['vitamin_b6_mg'] ?? 0)), 4),
+                'Vitamin E' => round(max(0.0, (float)($row['vitamin_e_mg'] ?? 0)), 4),
+                'Vitamin B12' => round(max(0.0, (float)($row['vitamin_b12_mcg'] ?? 0)), 4),
+            ];
+
+            $profiles[$k] = [
+                'fdc_id' => 0,
+                'description' => $k . ' (Emma Estimate)',
+                'data_type' => 'Emma Estimate',
+                'per100g' => [
+                    'calories' => round(max(0.0, (float)($row['calories'] ?? 0)), 2),
+                    'protein_g' => round(max(0.0, (float)($row['protein_g'] ?? 0)), 3),
+                    'carbs_g' => round(max(0.0, (float)($row['carbs_g'] ?? 0)), 3),
+                    'fat_g' => round(max(0.0, (float)($row['fat_g'] ?? 0)), 3),
+                    'fiber_g' => round($fiber, 3),
+                    'micros' => $micros,
+                ],
+            ];
+        }
+
+        return $profiles;
     }
 
     /**
@@ -798,6 +1071,10 @@ class UsdaNutritionService {
             $candidates[] = 'cilantro';
         } elseif ($token === 'cilantro') {
             $candidates[] = 'coriander';
+        } elseif ($token === 'tamari' && str_contains($desc, 'soy sauce')) {
+            $candidates[] = 'soy';
+        } elseif ($token === 'soy' && str_contains($desc, 'tamari')) {
+            $candidates[] = 'tamari';
         }
 
         foreach ($candidates as $word) {
@@ -833,7 +1110,9 @@ class UsdaNutritionService {
             'raw', 'fresh', 'cooked', 'boiled', 'steamed', 'baked', 'roasted',
             'canned', 'drained', 'solids', 'dry', 'dried', 'ground', 'whole',
             'powder', 'paste', 'extra', 'firm', 'silken', 'soft', 'regular',
-            'light', 'lite', 'unsweetened', 'sweetened', 'red', 'green',
+            'light', 'lite', 'low', 'reduced', 'sodium', 'free', 'organic',
+            'unsalted', 'salted', 'pure', 'natural', 'vegan', 'plant', 'based',
+            'gluten', 'made', 'from', 'unsweetened', 'sweetened', 'red', 'green',
             'yellow', 'black', 'white', 'baby', 'small', 'large', 'medium',
             'seed', 'seeds', 'leaf', 'leaves', 'juice', 'spices', 'spice',
             'table', 'sea', 'kosher', 'iodized', 'flakes', 'crushed', 'minced',
@@ -863,8 +1142,10 @@ class UsdaNutritionService {
             }
             $desc = strtolower((string)$food['description']);
 
-            // Hard requirement: primary core noun (and when multiple core nouns exist, at least one primary core noun)
-            // must match on a word boundary so "parsley, raw" never matches "Beets, raw" or "cumin seed" -> "Flaxseed".
+            // Hard requirement:
+            // - 1 or 2 core nouns (e.g. "parsley", "coconut aminos", "nutritional yeast"): ALL core nouns must match
+            //   so "coconut aminos" never falsely matches "Coconut milk".
+            // - 3+ core nouns (e.g. "yukon gold potato"): primary core noun + majority must match.
             $coreHits = 0;
             foreach ($coreTokens as $cTok) {
                 if ($this->tokenMatchesDesc($cTok, $desc)) {
@@ -874,10 +1155,10 @@ class UsdaNutritionService {
             if ($coreHits === 0) {
                 continue;
             }
-            if (count($coreTokens) === 1 && !$this->tokenMatchesDesc($coreTokens[0], $desc)) {
+            if (count($coreTokens) <= 2 && $coreHits < count($coreTokens)) {
                 continue;
             }
-            if (count($coreTokens) >= 2 && !$this->tokenMatchesDesc($coreTokens[count($coreTokens) - 1], $desc) && !$this->tokenMatchesDesc($coreTokens[0], $desc)) {
+            if (count($coreTokens) >= 3 && $coreHits < ceil(count($coreTokens) * 0.6)) {
                 continue;
             }
 
