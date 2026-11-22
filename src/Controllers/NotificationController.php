@@ -2,6 +2,7 @@
 namespace App\Controllers;
 
 use App\Database;
+use App\Services\StoryService;
 
 class NotificationController {
 
@@ -21,6 +22,7 @@ class NotificationController {
     public function getNotifications() {
         $userId = $this->requireAuthUserId();
         $db = Database::connect();
+        StoryService::ensureSchema($db);
 
         $stmt = $db->prepare("
             SELECT
@@ -30,6 +32,7 @@ class NotificationController {
                 n.actor_username,
                 n.recipe_id,
                 n.comment_id,
+                n.story_slug,
                 n.type,
                 n.message,
                 n.is_read,

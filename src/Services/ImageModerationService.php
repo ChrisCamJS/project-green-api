@@ -129,7 +129,9 @@ class ImageModerationService {
             ? 'a user profile avatar or chef portrait on a wholesome plant-based cooking community site (normal selfies, portraits, pets, nature, food, and benign logos are completely fine)'
             : ($context === 'comment'
                 ? 'a recipe comment photo on a wholesome plant-based cooking community site (dishes, ingredients, kitchens, plating variations, and nutrition labels are completely fine)'
-                : 'a recipe photo on a wholesome plant-based cooking community site (food, dishes, ingredients, kitchens, cooking steps, and nutrition labels are completely fine)');
+                : ($context === 'story'
+                    ? 'a community recipe story blog photo on a wholesome plant-based cooking community site (dishes, family dinners, kitchens, gardens, ingredients, and cooking moments are completely fine)'
+                    : 'a recipe photo on a wholesome plant-based cooking community site (food, dishes, ingredients, kitchens, cooking steps, and nutrition labels are completely fine)'));
 
         $prompt = "Inspect this uploaded image for safety moderation. It is intended for {$contextDesc}.\n\n"
             . "Set safe=false ONLY if the image contains any inappropriate or harmful content, including:\n"

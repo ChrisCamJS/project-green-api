@@ -99,4 +99,14 @@ $router->add('POST', '/fitness-activities', 'FitnessController', 'addActivity');
 $router->add('DELETE', '/fitness-activities', 'FitnessController', 'deleteActivity');
 $router->add('GET', '/achievements', 'AchievementController', 'getMyAchievements');
 
+// RECIPE STORIES (USER BLOG POSTS & SOCIAL SHARING)
+$router->add('GET', '/admin/stories', 'StoryController', 'getAdminStories');
+$router->add('GET', '/stories', 'StoryController', 'getStories');
+$router->add('GET', '/stories/single', 'StoryController', 'getStoryBySlug');
+$router->add('POST', '/stories', 'StoryController', 'createStory');
+$router->add('PUT', '/stories', 'StoryController', 'updateStory');
+$router->add('DELETE', '/stories', 'StoryController', 'deleteStory');
+$router->add('POST', '/stories/upload-image', 'StoryController', 'uploadStoryImage');
+$router->add('POST', '/stories/like', 'StoryController', 'toggleStoryLike');
+
 return $router;

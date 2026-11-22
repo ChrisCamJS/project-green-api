@@ -79,15 +79,19 @@ class AdminController {
         }
 
         $db = \App\Database::connect();
+        \App\Services\RecipeVariantService::ensureSchema($db);
         $sql = "
             SELECT
                 r.id, r.user_id, u.username AS author_username,
+                r.parent_recipe_id, r.root_recipe_id, r.is_masterpiece, r.variant_summary,
+                pr.title AS parent_recipe_title,
                 r.title, r.description, r.yields, r.prep_time_mins, r.cook_time_mins,
                 r.is_wfpb, r.is_oil_free, r.is_gluten_free, r.is_sugar_free, r.is_public,
                 r.oil_rationale, r.notes, r.image_source, r.created_at, r.updated_at,
                 m.calories, m.protein_g, m.carbs_g, m.fat_g, m.fiber_g
             FROM recipes r
             LEFT JOIN users u ON r.user_id = u.id
+            LEFT JOIN recipes pr ON r.parent_recipe_id = pr.id
             LEFT JOIN macros m ON r.id = m.recipe_id
             ORDER BY r.id DESC
         ";
@@ -112,6 +116,9 @@ class AdminController {
         foreach ($recipes as &$r) {
             $rid = (int)$r['id'];
             $r['id'] = $rid;
+            $r['parent_recipe_id'] = !empty($r['parent_recipe_id']) ? (int)$r['parent_recipe_id'] : null;
+            $r['root_recipe_id'] = !empty($r['root_recipe_id']) ? (int)$r['root_recipe_id'] : null;
+            $r['is_masterpiece'] = (int)($r['is_masterpiece'] ?? 0);
             $r['is_wfpb'] = (int)$r['is_wfpb'];
             $r['is_oil_free'] = (int)$r['is_oil_free'];
             $r['is_gluten_free'] = (int)$r['is_gluten_free'];

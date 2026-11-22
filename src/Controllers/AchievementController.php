@@ -74,6 +74,50 @@ class AchievementController {
                     4 => ['name' => 'Vault Ambassador', 'target' => 30, 'desc' => 'Follow 30 chefs'],
                 ],
             ],
+            'variants_created' => [
+                'title' => 'Flavor Remixer',
+                'icon' => '🔀',
+                'unit' => 'recipe variants created',
+                'levels' => [
+                    1 => ['name' => 'First Twist', 'target' => 1, 'desc' => 'Create your first recipe variant'],
+                    2 => ['name' => 'Creative Alchemist', 'target' => 5, 'desc' => 'Create 5 recipe variants'],
+                    3 => ['name' => 'Remix Virtuoso', 'target' => 15, 'desc' => 'Create 15 recipe variants'],
+                    4 => ['name' => 'Master of Reinvention', 'target' => 30, 'desc' => 'Create 30 recipe variants'],
+                ],
+            ],
+            'variants_inspired' => [
+                'title' => 'Culinary Muse',
+                'icon' => '✨',
+                'unit' => 'variants inspired',
+                'levels' => [
+                    1 => ['name' => 'Spark of Inspiration', 'target' => 1, 'desc' => 'Have another chef create a variant of your recipe'],
+                    2 => ['name' => 'Trendsetter', 'target' => 5, 'desc' => 'Inspire 5 community recipe variants'],
+                    3 => ['name' => 'Kitchen Influencer', 'target' => 15, 'desc' => 'Inspire 15 community recipe variants'],
+                    4 => ['name' => 'Vault Icon', 'target' => 35, 'desc' => 'Inspire 35 community recipe variants'],
+                ],
+            ],
+            'stories_published' => [
+                'title' => 'Vault Storyteller',
+                'icon' => '📖',
+                'unit' => 'stories published',
+                'levels' => [
+                    1 => ['name' => 'First Chapter', 'target' => 1, 'desc' => 'Publish your first recipe story'],
+                    2 => ['name' => 'Kitchen Chronicler', 'target' => 5, 'desc' => 'Publish 5 recipe stories'],
+                    3 => ['name' => 'Culinary Author', 'target' => 15, 'desc' => 'Publish 15 recipe stories'],
+                    4 => ['name' => 'Bestselling Chef', 'target' => 30, 'desc' => 'Publish 30 recipe stories'],
+                ],
+            ],
+            'story_likes_received' => [
+                'title' => 'Beloved Author',
+                'icon' => '❤️',
+                'unit' => 'story likes received',
+                'levels' => [
+                    1 => ['name' => 'Warm Applause', 'target' => 1, 'desc' => 'Receive your first like on a recipe story'],
+                    2 => ['name' => 'Reader Favorite', 'target' => 10, 'desc' => 'Receive 10 likes across your stories'],
+                    3 => ['name' => 'Community Columnist', 'target' => 35, 'desc' => 'Receive 35 likes across your stories'],
+                    4 => ['name' => 'Standing Ovation', 'target' => 100, 'desc' => 'Receive 100 likes across your stories'],
+                ],
+            ],
         ];
     }
 
@@ -89,6 +133,10 @@ class AchievementController {
             'fitness_sessions' => 0,
             'fitness_minutes' => 0,
             'following' => 0,
+            'variants_created' => 0,
+            'variants_inspired' => 0,
+            'stories_published' => 0,
+            'story_likes_received' => 0,
         ];
 
         try {
@@ -115,6 +163,34 @@ class AchievementController {
             $counts['following'] = (int)$s->fetchColumn();
         } catch (\Exception $e) {
             // Gracefully handle if a table isn't present yet
+        }
+
+        try {
+            $s = $db->prepare("SELECT COUNT(*) FROM recipes WHERE user_id = ? AND parent_recipe_id IS NOT NULL AND is_public = 1");
+            $s->execute([$userId]);
+            $counts['variants_created'] = (int)$s->fetchColumn();
+
+            $s = $db->prepare("SELECT COUNT(*) FROM recipes v JOIN recipes p ON v.parent_recipe_id = p.id WHERE p.user_id = ? AND v.user_id <> ? AND v.is_public = 1");
+            $s->execute([$userId, $userId]);
+            $counts['variants_inspired'] = (int)$s->fetchColumn();
+        } catch (\Throwable $e) {
+            // Gracefully handle if variant columns aren't present yet
+        }
+
+        try {
+            $s = $db->prepare("SELECT COUNT(*) FROM recipe_stories WHERE user_id = ? AND status = 'published'");
+            $s->execute([$userId]);
+            $counts['stories_published'] = (int)$s->fetchColumn();
+        } catch (\Throwable $e) {
+            // Gracefully handle if recipe_stories table isn't present yet
+        }
+
+        try {
+            $s = $db->prepare("SELECT COUNT(*) FROM story_likes sl JOIN recipe_stories s ON sl.story_id = s.id WHERE s.user_id = ? AND s.status = 'published'");
+            $s->execute([$userId]);
+            $counts['story_likes_received'] = (int)$s->fetchColumn();
+        } catch (\Throwable $e) {
+            // Gracefully handle if story_likes table isn't present yet
         }
 
         $catalog = self::getCatalog();

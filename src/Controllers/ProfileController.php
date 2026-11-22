@@ -6,6 +6,7 @@ use App\Database;
 use App\Services\ImageModerationService;
 use App\Services\ProfanityFilterService;
 use App\Services\RecipeVariantService;
+use App\Services\StoryService;
 use PDO;
 
 class ProfileController {
@@ -250,6 +251,58 @@ class ProfileController {
             ];
         }, $rawRecipes);
 
+        StoryService::ensureSchema($this->db);
+        $storiesWhere = $isOwnProfile
+            ? "WHERE s.user_id = :target_uid"
+            : "WHERE s.user_id = :target_uid AND s.status = 'published'";
+        $storiesStmt = $this->db->prepare("
+            SELECT s.id, s.recipe_id, s.user_id, s.title, s.slug, s.excerpt,
+                   s.cover_image, s.read_time_minutes, s.status, s.created_at, s.updated_at,
+                   u.username AS author_name,
+                   u.display_name AS author_display_name,
+                   u.profile_image AS author_avatar,
+                   r.title AS recipe_title,
+                   r.image_url AS recipe_image_url,
+                   (SELECT COUNT(*) FROM story_likes sl WHERE sl.story_id = s.id) AS like_count
+            FROM recipe_stories s
+            LEFT JOIN users u ON u.id = s.user_id
+            LEFT JOIN recipes r ON r.id = s.recipe_id
+            $storiesWhere
+            ORDER BY s.created_at DESC
+        ");
+        $storiesStmt->execute([':target_uid' => $targetUserId]);
+        $rawStories = $storiesStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        $formattedStories = array_map(function($s) {
+            $cover = !empty($s['cover_image']) ? $s['cover_image'] : null;
+            $recipeImg = !empty($s['recipe_image_url']) ? $s['recipe_image_url'] : null;
+            return [
+                'id' => (int)$s['id'],
+                'recipeId' => (int)$s['recipe_id'],
+                'recipe_id' => (int)$s['recipe_id'],
+                'userId' => (int)$s['user_id'],
+                'user_id' => (int)$s['user_id'],
+                'authorId' => (int)$s['user_id'],
+                'authorName' => $s['author_name'] ?? 'Vault Chef',
+                'authorDisplayName' => $s['author_display_name'] ?? null,
+                'authorAvatar' => $s['author_avatar'] ?? null,
+                'title' => $s['title'],
+                'slug' => $s['slug'],
+                'excerpt' => $s['excerpt'],
+                'coverImage' => $cover,
+                'cover_image' => $cover,
+                'effectiveCoverImage' => $cover ?: $recipeImg,
+                'readTimeMinutes' => max(1, (int)($s['read_time_minutes'] ?? 1)),
+                'read_time_minutes' => max(1, (int)($s['read_time_minutes'] ?? 1)),
+                'status' => $s['status'] ?? 'published',
+                'createdAt' => $s['created_at'],
+                'created_at' => $s['created_at'],
+                'updatedAt' => $s['updated_at'] ?? $s['created_at'],
+                'recipeTitle' => $s['recipe_title'] ?? null,
+                'recipeImageUrl' => $recipeImg,
+                'likeCount' => (int)($s['like_count'] ?? 0),
+            ];
+        }, $rawStories);
+
         $profileData = [
             'id' => $targetUserId,
             'username' => $user['username'],
@@ -267,6 +320,7 @@ class ProfileController {
             'follower_count' => $followerCount,
             'following_count' => $followingCount,
             'recipe_count' => count($formattedRecipes),
+            'story_count' => count($formattedStories),
             'is_following' => $isFollowing,
             'is_own_profile' => $isOwnProfile,
             'achievements' => AchievementController::syncAndFetch($this->db, $targetUserId),
@@ -309,7 +363,8 @@ class ProfileController {
         echo json_encode([
             "success" => true,
             "profile" => $profileData,
-            "recipes" => $formattedRecipes
+            "recipes" => $formattedRecipes,
+            "stories" => $formattedStories
         ]);
     }
 
