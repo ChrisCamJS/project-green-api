@@ -38,6 +38,10 @@ class PaymentController {
         $publishableKey = trim((string)($env['STRIPE_PUBLISHABLE_KEY'] ?? ''));
         $webhookSecret = trim((string)($env['STRIPE_WEBHOOK_SECRET'] ?? ''));
         $frontendUrl = rtrim(trim((string)($env['FRONTEND_URL'] ?? '')), '/');
+        $cryptoPmcId = trim((string)($env['STRIPE_CRYPTO_PMC_ID'] ?? ''));
+        $productTaxCode = trim((string)($env['STRIPE_PRODUCT_TAX_CODE'] ?? 'txcd_10103000'));
+        $managedEnv = strtolower(trim((string)($env['STRIPE_MANAGED_PAYMENTS'] ?? 'true')));
+        $managedPaymentsEnabled = !in_array($managedEnv, ['false', '0', 'off', 'no'], true);
 
         $isPlaceholder = ($secretKey === '' || stripos($secretKey, 'REPLACE_WITH') !== false);
 
@@ -46,6 +50,9 @@ class PaymentController {
             'publishable_key' => $publishableKey,
             'webhook_secret' => $webhookSecret,
             'frontend_url' => $frontendUrl,
+            'crypto_pmc_id' => $cryptoPmcId,
+            'product_tax_code' => $productTaxCode,
+            'managed_payments_enabled' => $managedPaymentsEnabled,
             'is_configured' => !$isPlaceholder,
         ];
     }
@@ -97,6 +104,26 @@ class PaymentController {
         return 'https://veggievault.chrisandemmashow.com';
     }
 
+    private function resolveCaBundlePath(): ?string {
+        $configured = trim((string)ini_get('curl.cainfo')) ?: trim((string)ini_get('openssl.cafile'));
+        if ($configured !== '' && is_file($configured)) {
+            return $configured;
+        }
+
+        $phpDir = dirname(PHP_BINARY);
+        $candidates = [
+            $phpDir . DIRECTORY_SEPARATOR . 'extras' . DIRECTORY_SEPARATOR . 'ssl' . DIRECTORY_SEPARATOR . 'cacert.pem',
+            'C:\\Program Files\\Ampps\\php82\\extras\\ssl\\cacert.pem',
+            'C:\\Program Files\\Ampps\\php\\extras\\ssl\\cacert.pem',
+        ];
+        foreach ($candidates as $candidate) {
+            if (is_file($candidate)) {
+                return $candidate;
+            }
+        }
+        return null;
+    }
+
     private function stripeRequest(string $method, string $path, string $secretKey, array $params = []): array {
         if (!function_exists('curl_init')) {
             return [
@@ -119,13 +146,19 @@ class PaymentController {
             $url .= (strpos($url, '?') === false ? '?' : '&') . http_build_query($params);
         }
 
-        curl_setopt_array($ch, [
+        $curlOpts = [
             CURLOPT_URL => $url,
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => 30,
             CURLOPT_USERPWD => $secretKey . ':',
             CURLOPT_HTTPHEADER => $headers,
-        ]);
+        ];
+        $caBundle = $this->resolveCaBundlePath();
+        if ($caBundle !== null) {
+            $curlOpts[CURLOPT_CAINFO] = $caBundle;
+        }
+
+        curl_setopt_array($ch, $curlOpts);
 
         $rawResponse = curl_exec($ch);
         $curlError = curl_error($ch);
@@ -389,6 +422,14 @@ class PaymentController {
         $frontendUrl = $this->resolveFrontendUrl($config);
         $amountCents = $tokens * self::PRICE_PER_TOKEN_CENTS;
 
+        $productData = [
+            'name' => "Veggie Vault Generation Tokens ({$tokens} Tokens)",
+            'description' => 'Unlock Emma Masterpiece Recipes, AI Dish Photos, Deep Dive Nutrition, and Live Audio Sessions ($0.20/token — 5 tokens per $1).',
+        ];
+        if ($config['product_tax_code'] !== '') {
+            $productData['tax_code'] = $config['product_tax_code'];
+        }
+
         $basePayload = [
             'mode' => 'payment',
             'success_url' => $frontendUrl . '/buy-tokens?session_id={CHECKOUT_SESSION_ID}&status=success',
@@ -404,45 +445,31 @@ class PaymentController {
                     'price_data' => [
                         'currency' => 'usd',
                         'unit_amount' => self::PRICE_PER_TOKEN_CENTS,
-                        'product_data' => [
-                            'name' => "Veggie Vault Generation Tokens ({$tokens} Tokens)",
-                            'description' => 'Unlock Emma Masterpiece Recipes, AI Dish Photos, Deep Dive Nutrition, and Live Audio Sessions ($0.20/token — 5 tokens per $1).',
-                        ],
+                        'product_data' => $productData,
                     ],
                     'quantity' => $tokens,
                 ],
             ],
         ];
 
+        if (!$config['managed_payments_enabled']) {
+            $basePayload['managed_payments'] = ['enabled' => 'false'];
+        }
+
         if ($userEmail !== '' && filter_var($userEmail, FILTER_VALIDATE_EMAIL)) {
             $basePayload['customer_email'] = $userEmail;
         }
 
         $fallbackUsed = false;
-        if ($paymentMethod === 'crypto') {
-            $payload = $basePayload;
-            $payload['payment_method_types'] = ['card', 'crypto'];
-            $res = $this->stripeRequest('POST', '/checkout/sessions', $config['secret_key'], $payload);
-
-            // If Crypto hasn't been enabled yet in the merchant's Stripe Dashboard, fall back cleanly.
-            if (!$res['ok'] && (stripos((string)$res['error'], 'crypto') !== false || stripos((string)$res['error'], 'payment_method') !== false)) {
-                $fallbackUsed = true;
-                $res = $this->stripeRequest('POST', '/checkout/sessions', $config['secret_key'], $basePayload);
-                if (!$res['ok']) {
-                    $cardPayload = $basePayload;
-                    $cardPayload['payment_method_types'] = ['card'];
-                    $res = $this->stripeRequest('POST', '/checkout/sessions', $config['secret_key'], $cardPayload);
-                }
-            }
-        } else {
-            // Let Stripe Dynamic Payment Methods surface Card + Apple Pay / Google Pay / Link (and Crypto if enabled in Dashboard)
-            $res = $this->stripeRequest('POST', '/checkout/sessions', $config['secret_key'], $basePayload);
-            if (!$res['ok'] && stripos((string)$res['error'], 'payment_method') !== false) {
-                $cardPayload = $basePayload;
-                $cardPayload['payment_method_types'] = ['card'];
-                $res = $this->stripeRequest('POST', '/checkout/sessions', $config['secret_key'], $cardPayload);
-            }
+        $payload = $basePayload;
+        if ($paymentMethod === 'crypto' && !empty($config['crypto_pmc_id'])) {
+            // Optional Stripe Dashboard Payment Method Configuration ID for crypto-first checkout
+            $payload['payment_method_configuration'] = $config['crypto_pmc_id'];
         }
+
+        // Dynamic Payment Methods are managed in Stripe Dashboard -> Settings -> Payment methods
+        // (do not pass legacy payment_method_types, which Stripe rejects on modern API versions).
+        $res = $this->stripeRequest('POST', '/checkout/sessions', $config['secret_key'], $payload);
 
         if (!$res['ok'] || empty($res['data']['id']) || empty($res['data']['url'])) {
             http_response_code($res['status'] >= 400 ? $res['status'] : 500);
