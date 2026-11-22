@@ -3,6 +3,7 @@
 namespace App\Controllers;
 
 use App\Database;
+use App\Services\ImageModerationService;
 use App\Services\ProfanityFilterService;
 use PDO;
 
@@ -359,16 +360,24 @@ class ProfileController {
             $dataParts = explode(',', $parts[1] ?? '', 2);
             $base64Body = $dataParts[1] ?? '';
 
-            $ext = 'jpg';
-            if (str_contains($type, 'png')) $ext = 'png';
-            elseif (str_contains($type, 'webp')) $ext = 'webp';
-
             $decodedData = base64_decode($base64Body, true);
-            if ($decodedData === false || empty($decodedData)) {
+            $imgInfo = ($decodedData !== false && !empty($decodedData) && strlen($decodedData) <= 10 * 1024 * 1024)
+                ? @getimagesizefromstring($decodedData)
+                : false;
+            $mimeToExt = [
+                'image/jpeg' => 'jpg',
+                'image/png' => 'png',
+                'image/webp' => 'webp',
+                'image/gif' => 'gif',
+            ];
+            if ($imgInfo === false || !isset($mimeToExt[$imgInfo['mime'] ?? ''])) {
                 http_response_code(400);
                 echo json_encode(["success" => false, "message" => "Invalid profile image data provided."]);
                 return;
             }
+
+            (new ImageModerationService())->assertImageSafe($decodedData, $imgInfo['mime'], 'profile');
+            $ext = $mimeToExt[$imgInfo['mime']];
 
             $uploadDir = __DIR__ . '/../../public/images/avatars/';
             if (!is_dir($uploadDir)) {

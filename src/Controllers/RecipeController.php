@@ -5,6 +5,7 @@ namespace App\Controllers;
 use PDO;
 use Exception;
 use App\Database;
+use App\Services\ImageModerationService;
 use App\Services\ProfanityFilterService;
 use App\Services\UsdaNutritionService;
 
@@ -331,6 +332,8 @@ public function getAllRecipes() {
                 echo json_encode(["success" => false, "message" => "Invalid image data provided."]);
                 return;
             }
+
+            (new ImageModerationService())->assertImageSafe($decodedData, $imgInfo['mime'], 'recipe');
 
             $ext = $mimeToExt[$imgInfo['mime']];
             $filename = time() . '_' . bin2hex(random_bytes(4)) . '_ai_recipe_img.' . $ext;
@@ -794,7 +797,8 @@ public function getAllRecipes() {
         }
 
         $allowedExts = ['jpg', 'jpeg', 'png', 'webp', 'gif'];
-        $uploadedUrls = [];
+        $moderationService = new ImageModerationService();
+        $stagedFiles = [];
 
         foreach ($names as $idx => $origName) {
             if (($errors[$idx] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
@@ -815,10 +819,24 @@ public function getAllRecipes() {
                 continue;
             }
 
-            $ext = $mimeToExt[$imgInfo['mime']];
+            $rawBytes = @file_get_contents($tmp);
+            if ($rawBytes === false || $rawBytes === '') {
+                continue;
+            }
 
-            $filename = time() . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
-            if (@move_uploaded_file($tmp, $uploadDir . $filename)) {
+            // Moderate every upload in memory before moving any file onto disk
+            $moderationService->assertImageSafe($rawBytes, $imgInfo['mime'], 'recipe');
+
+            $stagedFiles[] = [
+                'tmp' => $tmp,
+                'ext' => $mimeToExt[$imgInfo['mime']],
+            ];
+        }
+
+        $uploadedUrls = [];
+        foreach ($stagedFiles as $file) {
+            $filename = time() . '_' . bin2hex(random_bytes(4)) . '.' . $file['ext'];
+            if (@move_uploaded_file($file['tmp'], $uploadDir . $filename)) {
                 $uploadedUrls[] = '/images/' . $filename;
             }
         }
@@ -1096,6 +1114,8 @@ public function getAllRecipes() {
             echo json_encode(["success" => false, "message" => "Invalid image data provided."]);
             return;
         }
+
+        (new ImageModerationService())->assertImageSafe($decodedData, $imgInfo['mime'], 'recipe');
 
         $ext = $mimeToExt[$imgInfo['mime']];
         $prefix = $source === 'ai' ? 'ai_recipe_' : 'user_recipe_';
@@ -1728,10 +1748,22 @@ public function getUserFavorites() {
 
         // Compress and save image attachment if present
         if (!empty($rawImage) && strpos($rawImage, 'data:image') === 0) {
-            list($type, $imageData) = explode(';', $rawImage);
-            list(, $imageData)      = explode(',', $imageData);
-            $decodedData = base64_decode($imageData);
-            
+            $parts = explode(';', $rawImage, 2);
+            $type = $parts[0] ?? '';
+            $dataParts = explode(',', $parts[1] ?? '', 2);
+            $decodedData = base64_decode($dataParts[1] ?? '', true);
+            $imgInfo = ($decodedData !== false && !empty($decodedData) && strlen($decodedData) <= 10 * 1024 * 1024)
+                ? @getimagesizefromstring($decodedData)
+                : false;
+
+            if ($imgInfo === false || !in_array($imgInfo['mime'] ?? '', ['image/jpeg', 'image/png', 'image/webp', 'image/gif'], true)) {
+                http_response_code(400);
+                echo json_encode(["success" => false, "message" => "Invalid image attachment provided."]);
+                return;
+            }
+
+            (new ImageModerationService())->assertImageSafe($decodedData, $imgInfo['mime'], 'comment');
+
             $sourceImage = imagecreatefromstring($decodedData);
             if ($sourceImage !== false) {
                 $width = imagesx($sourceImage);
@@ -2000,7 +2032,8 @@ public function getUserFavorites() {
             mkdir($uploadDir, 0755, true);
         }
 
-        $savedUrls = [];
+        $moderationService = new ImageModerationService();
+        $stagedPhotos = [];
         foreach (array_slice($rawImages, 0, 8) as $rawImage) {
             if (!is_string($rawImage) || trim($rawImage) === '') {
                 continue;
@@ -2020,9 +2053,33 @@ public function getUserFavorites() {
                 continue;
             }
 
-            $ext = $mimeToExt[$imgInfo['mime']];
-            $filename = time() . '_' . bin2hex(random_bytes(4)) . '_user_recipe_' . $recipeId . '.' . $ext;
-            if (file_put_contents($uploadDir . $filename, $decodedData) !== false) {
+            // Moderate every photo in memory before writing any image to disk
+            $modRes = $moderationService->moderateImageBytes($decodedData, $imgInfo['mime'], 'recipe');
+            if (empty($modRes['safe'])) {
+                http_response_code((int)($modRes['status'] ?? 400));
+                echo json_encode([
+                    "success" => false,
+                    "message" => $modRes['message'] ?? 'This image cannot be uploaded because it appears to contain inappropriate content.',
+                ]);
+                return;
+            }
+
+            $stagedPhotos[] = [
+                'bytes' => $decodedData,
+                'ext' => $mimeToExt[$imgInfo['mime']],
+            ];
+        }
+
+        if (empty($stagedPhotos)) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "No valid images could be saved."]);
+            return;
+        }
+
+        $savedUrls = [];
+        foreach ($stagedPhotos as $photo) {
+            $filename = time() . '_' . bin2hex(random_bytes(4)) . '_user_recipe_' . $recipeId . '.' . $photo['ext'];
+            if (file_put_contents($uploadDir . $filename, $photo['bytes']) !== false) {
                 $url = '/images/' . $filename;
                 $ins = $this->db->prepare("INSERT INTO recipe_images (recipe_id, user_id, image_url, source) VALUES (?, ?, ?, 'user')");
                 $ins->execute([$recipeId, $userId, $url]);
