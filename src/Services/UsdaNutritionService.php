@@ -135,9 +135,10 @@ class UsdaNutritionService {
      *
      * @param array $rawIngredients Strings or associative ingredient rows from DB.
      * @param string $yields Recipe yield label (e.g. "2 servings").
+     * @param string $recipeTitle Optional recipe title for Emma's Deep Dive summary.
      * @return array
      */
-    public function calculateRecipeNutrition(array $rawIngredients, string $yields = '4 servings'): array {
+    public function calculateRecipeNutrition(array $rawIngredients, string $yields = '4 servings', string $recipeTitle = ''): array {
         $servings = $this->parseServingsCount($yields);
         $cleanedLines = $this->cleanRawIngredientLines($rawIngredients);
 
@@ -392,6 +393,24 @@ class UsdaNutritionService {
         usort($optionalMicros, fn($a, $b) => ($b['dv'] <=> $a['dv']));
         $finalMicros = array_merge($mandatoryMicros, array_slice($optionalMicros, 0, 10));
 
+        $macrosArray = [
+            'calories' => $perServingCals,
+            'protein_g' => $perServingPro,
+            'carbs_g' => $perServingCarb,
+            'fat_g' => $perServingFat,
+            'fiber_g' => $perServingFib,
+            'math_calculations' => $mathSummary,
+        ];
+        $deepDive = $this->formatDeepDiveMarkdown(
+            $macrosArray,
+            $finalMicros,
+            $servings,
+            $matchedCount,
+            $totalMeasurable,
+            $recipeTitle,
+            $breakdown
+        );
+
         return [
             'success' => true,
             'source' => 'usda_fdc',
@@ -399,17 +418,156 @@ class UsdaNutritionService {
             'servings' => $servings,
             'matchedCount' => $matchedCount,
             'totalIngredients' => $totalMeasurable,
-            'macros' => [
-                'calories' => $perServingCals,
-                'protein_g' => $perServingPro,
-                'carbs_g' => $perServingCarb,
-                'fat_g' => $perServingFat,
-                'fiber_g' => $perServingFib,
-                'math_calculations' => $mathSummary,
-            ],
+            'macros' => $macrosArray,
             'micros' => $finalMicros,
             'breakdown' => $breakdown,
+            'deep_dive' => $deepDive,
         ];
+    }
+
+    /**
+     * Maps an ingredient name/query to its practical whole-food health benefit.
+     */
+    private function describeIngredientBenefit(string $ingredientLabel): string {
+        $q = strtolower($ingredientLabel);
+        if (preg_match('/\b(oat|oats|quinoa|buckwheat|millet|barley|farro|brown rice|wild rice|whole[- ]wheat|spelt)\b/', $q)) {
+            return 'slow-release complex carbohydrates, soluble beta-glucan fiber, and steady energy';
+        }
+        if (preg_match('/\b(almond flour|coconut flour|oat flour|chickpea flour|flour)\b/', $q)) {
+            return 'wholesome plant-based structure along with minerals and prebiotic fiber';
+        }
+        if (preg_match('/\b(flax|chia|hemp)\b/', $q)) {
+            return 'plant-based omega-3 fatty acids, mucilage fiber, and lignans for heart and digestive health';
+        }
+        if (preg_match('/\b(almond|walnut|cashew|pecan|pistachio|tahini|sesame|sunflower|pumpkin seed|peanut)\b/', $q)) {
+            return 'heart-healthy unsaturated fats, natural creaminess without refined oils, and trace minerals';
+        }
+        if (preg_match('/\b(bean|lentil|chickpea|garbanzo|tofu|tempeh|edamame|pea protein)\b/', $q)) {
+            return 'complete plant protein, resistant starch for gut flora, and long-lasting satiety';
+        }
+        if (preg_match('/\b(cinnamon|turmeric|ginger|clove|nutmeg|cardamom|cocoa|cacao|vanilla)\b/', $q)) {
+            return 'concentrated antioxidant polyphenols that warm the palate and support blood-sugar balance';
+        }
+        if (preg_match('/\b(date|dates|banana|apple|applesauce|raisin|berry|berries|blueberry|strawberry|fig|mango|pumpkin)\b/', $q)) {
+            return 'natural whole-fruit sweetness, soluble pectin fiber, and protective phytonutrients';
+        }
+        if (preg_match('/\b(spinach|kale|arugula|chard|broccoli|collard|parsley|cilantro|basil|greens)\b/', $q)) {
+            return 'chlorophyll, folates, and cellular-protective phytonutrients with virtually zero caloric weight';
+        }
+        if (preg_match('/\b(garlic|onion|shallot|leek|scallion|chive)\b/', $q)) {
+            return 'prebiotic inulin fibers and organosulfur compounds that bolster immune resilience';
+        }
+        if (preg_match('/\b(sweet potato|carrot|squash|bell pepper|tomato)\b/', $q)) {
+            return 'carotenoid antioxidants like beta-carotene and lycopene for skin, vision, and recovery';
+        }
+        if (preg_match('/\b(lemon|lime|orange|citrus|vinegar)\b/', $q)) {
+            return 'bright natural acidity and vitamin-rich zest that also enhance plant-iron absorption';
+        }
+        if (preg_match('/\b(soy milk|oat milk|almond milk|plant milk)\b/', $q)) {
+            return 'dairy-free moisture along with plant protein or fortify-friendly lightness';
+        }
+
+        return 'clean, whole-food plant nourishment that layers flavor without refined oils or additives';
+    }
+
+    /**
+     * Builds an Emma-voiced Deep Dive focused on health aspects, ingredient benefits,
+     * and pairing advice — intentionally avoiding repeating stats already shown in the Nutrition Panel.
+     */
+    public function formatDeepDiveMarkdown(
+        array $macros,
+        array $micros,
+        float $servings,
+        int $matchedCount,
+        int $totalMeasurable,
+        string $recipeTitle = '',
+        array $breakdown = []
+    ): string {
+        $cleanTitle = trim((string)preg_replace('/^#+\s*/', '', $recipeTitle));
+        $cleanTitle = trim($cleanTitle, "[]\"'* ");
+        $dishRef = $cleanTitle !== '' ? "**{$cleanTitle}**" : 'this whole-food plant-based dish';
+
+        $satFatDv = 0.0;
+        $fiberDv = 0.0;
+        $standoutNames = [];
+        foreach ($micros as $m) {
+            $name = (string)($m['name'] ?? $m['nutrient_name'] ?? '');
+            $dv = (float)($m['dv'] ?? $m['daily_value_percentage'] ?? 0);
+            if ($name === 'Saturated Fat') {
+                $satFatDv = $dv;
+            } elseif ($name === 'Dietary Fiber') {
+                $fiberDv = $dv;
+            } elseif ($dv >= 10.0 && count($standoutNames) < 3) {
+                $standoutNames[] = strtolower($name);
+            }
+        }
+
+        $traits = ['naturally free of cholesterol and excess oil'];
+        if ($satFatDv <= 10.0) {
+            $traits[] = 'kind to cardiovascular health';
+        }
+        if ($fiberDv >= 15.0) {
+            $traits[] = 'wonderfully rich in gut-nurturing plant fiber for gentle satiety';
+        } else {
+            $traits[] = 'light and easy to digest without sluggishness';
+        }
+        if (!empty($standoutNames)) {
+            $traits[] = 'a notably bright source of ' . (count($standoutNames) > 1
+                ? implode(', ', array_slice($standoutNames, 0, -1)) . ' and ' . end($standoutNames)
+                : $standoutNames[0]);
+        }
+
+        $p1 = sprintf(
+            "### Nutritional & Health Perspective\nWhat makes %s such a clever kitchen creation is how effortlessly it delivers clean, whole-food nourishment while remaining %s — letting every ingredient earn its place rather than leaning on heavy refined fats or empty calories.",
+            $dishRef,
+            implode(', ', $traits)
+        );
+
+        // Spotlight 2-4 matched ingredients (prioritizing highest weight/caloric contributors, skipping salt/water)
+        $matchedIngredients = array_values(array_filter(
+            $breakdown,
+            fn($row) => !empty($row['matched']) && !preg_match('/^\s*(?:water|ice|sea salt|salt|kosher salt|baking powder|baking soda)\s*$/i', (string)($row['usda_query'] ?? ''))
+        ));
+        usort($matchedIngredients, fn($a, $b) => ($b['grams'] ?? 0) <=> ($a['grams'] ?? 0));
+
+        $seenLabels = [];
+        $spotlights = [];
+        foreach ($matchedIngredients as $item) {
+            $rawLabel = trim((string)($item['usda_query'] ?? ''));
+            $label = trim((string)preg_replace('/,\s*raw\b/i', '', $rawLabel));
+            $lowerKey = strtolower($label);
+            if ($label === '' || isset($seenLabels[$lowerKey])) {
+                continue;
+            }
+            $seenLabels[$lowerKey] = true;
+            $displayName = ucfirst($label);
+            $benefit = $this->describeIngredientBenefit($label);
+            $spotlights[] = "* **{$displayName}:** Brings {$benefit}.";
+            if (count($spotlights) >= 4) {
+                break;
+            }
+        }
+
+        $sections = [$p1];
+        if (!empty($spotlights)) {
+            $sections[] = "### Ingredient Spotlight\n" . implode("\n", $spotlights);
+        }
+
+        // Tailored pairing & serving advice based on dish type
+        $titleAndIngContext = strtolower($cleanTitle . ' ' . implode(' ', array_keys($seenLabels)));
+        $isSweetOrBake = (bool)preg_match(
+            '/\b(cookie|cookies|brownie|cake|muffin|muffins|pie|tart|bar|bars|pudding|oatmeal|granola|pancake|waffle|smoothie|parfait|snickerdoodle|shortbread|scone|biscuit|sweet|dessert)\b/',
+            $titleAndIngContext
+        );
+
+        if ($isSweetOrBake) {
+            $pairingBody = "Enjoy alongside a warm mug of herbal rooibos, chamomile, or lightly steamed unsweetened soy or oat milk for extra plant protein, or serve with a handful of fresh berries whose bright tartness balances natural whole-food sweetness.";
+        } else {
+            $pairingBody = "For balanced nutrient absorption, pair with a squeeze of fresh lemon or lime (vitamin C boosts non-heme plant iron uptake), or round out the plate with crisp leafy greens, fermented veggies for probiotics, or a light crunchy slaw.";
+        }
+        $sections[] = "### Emma's Pairing & Serving Advice\n{$pairingBody}";
+
+        return implode("\n\n", $sections);
     }
 
     /**

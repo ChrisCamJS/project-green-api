@@ -483,13 +483,21 @@ public function getAllRecipes() {
         if (!empty($ingredients) && is_array($ingredients)) {
             try {
                 $usdaService = new UsdaNutritionService($db);
-                $usdaCandidate = $usdaService->calculateRecipeNutrition($ingredients, $yields);
+                $usdaCandidate = $usdaService->calculateRecipeNutrition($ingredients, $yields, $title);
                 if (!empty($usdaCandidate['success'])) {
                     $usdaResult = $usdaCandidate;
                 }
             } catch (\Throwable $e) {
                 error_log('USDA calculation skipped on saveGeneratedRecipe: ' . $e->getMessage());
             }
+        }
+
+        $clientMicros = $data['micros'] ?? [];
+        $wantsFullMicros = (!empty($clientMicros) && is_array($clientMicros))
+            || $isPublic
+            || str_contains($notes, 'Advanced Nutritional Analysis');
+        if ($wantsFullMicros && $usdaResult && !empty($usdaResult['deep_dive'])) {
+            $notes = $this->upsertDeepDiveInNotes($notes, (string)$usdaResult['deep_dive']);
         }
 
         // 3. The SQL Transaction (All or Nothing!)
@@ -599,10 +607,6 @@ public function getAllRecipes() {
             }
 
             // STEP E: Insert Micros (use USDA micros when Masterpiece analysis or micros requested)
-            $clientMicros = $data['micros'] ?? [];
-            $wantsFullMicros = (!empty($clientMicros) && is_array($clientMicros))
-                || $isPublic
-                || str_contains($notes, 'Advanced Nutritional Analysis');
             $micros = ($wantsFullMicros && $usdaResult && !empty($usdaResult['micros']))
                 ? $usdaResult['micros']
                 : $clientMicros;
@@ -1327,6 +1331,28 @@ public function getAllRecipes() {
     }
 
     /**
+     * Replaces any prior Advanced Nutritional Analysis / Emma's Deep Dive section
+     * in recipe notes while preserving preceding Chef's Notes.
+     */
+    private function upsertDeepDiveInNotes(string $existingNotes, string $newDeepDive): string {
+        $trimmedNew = trim($newDeepDive);
+        if ($trimmedNew === '') {
+            return trim($existingNotes);
+        }
+
+        $baseNotes = preg_replace(
+            '/(?:\r?\n)*#{1,3}\s*(?:Advanced\s+Nutritional\s+Analysis|Emma\'?s\s+Deep\s+Dive(?:\s+Analysis)?)[\s\S]*$/i',
+            '',
+            trim($existingNotes)
+        );
+        $baseNotes = trim((string)$baseNotes);
+
+        return $baseNotes !== ''
+            ? $baseNotes . "\n\n### Advanced Nutritional Analysis\n" . $trimmedNew
+            : "### Advanced Nutritional Analysis\n" . $trimmedNew;
+    }
+
+    /**
      * POST /recipes/calculate-nutrition
      * Runs deterministic USDA FoodData Central calculation for a saved recipe (or ingredient preview).
      */
@@ -1338,6 +1364,7 @@ public function getAllRecipes() {
         $recipeId = (int)($data['recipe_id'] ?? 0);
         $ingredients = isset($data['ingredients']) && is_array($data['ingredients']) ? $data['ingredients'] : [];
         $yields = trim((string)($data['yields'] ?? ''));
+        $recipe = null;
 
         if ($recipeId > 0) {
             $recipe = $this->requireOwnedRecipe($recipeId, $userId);
@@ -1359,8 +1386,12 @@ public function getAllRecipes() {
             return;
         }
 
+        $recipeTitle = $recipe
+            ? (string)($recipe['title'] ?? '')
+            : trim((string)($data['title'] ?? ''));
+
         $usdaService = new UsdaNutritionService($this->db);
-        $calc = $usdaService->calculateRecipeNutrition($ingredients, $yields);
+        $calc = $usdaService->calculateRecipeNutrition($ingredients, $yields, $recipeTitle);
 
         if (empty($calc['success'])) {
             $statusCode = !empty($calc['rateLimited']) ? 503 : 422;
@@ -1378,6 +1409,15 @@ public function getAllRecipes() {
             try {
                 $this->db->beginTransaction();
                 $this->replaceNutritionRowsInDb($recipeId, $calc['macros'], $calc['micros']);
+                $updatedNotes = $this->upsertDeepDiveInNotes(
+                    (string)($recipe['notes'] ?? ''),
+                    (string)($calc['deep_dive'] ?? '')
+                );
+                $updNotesStmt = $this->db->prepare("UPDATE recipes SET notes = :notes WHERE id = :id");
+                $updNotesStmt->execute([
+                    ':notes' => $updatedNotes,
+                    ':id' => $recipeId,
+                ]);
                 $this->db->commit();
 
                 $macroStmt = $this->db->prepare("SELECT * FROM macros WHERE recipe_id = ?");
@@ -1395,6 +1435,8 @@ public function getAllRecipes() {
                     "servings" => $calc['servings'],
                     "matchedCount" => $calc['matchedCount'],
                     "totalIngredients" => $calc['totalIngredients'],
+                    "notes" => $updatedNotes,
+                    "deep_dive" => (string)($calc['deep_dive'] ?? ''),
                     "macros" => $savedMacros,
                     "micros" => $savedMicros,
                     "breakdown" => $calc['breakdown'],
@@ -1419,7 +1461,8 @@ public function getAllRecipes() {
     }
 
     /**
-     * Adds Emma's Deep Dive nutritional analysis and micronutrients to a saved draft/recipe.
+     * Adds nutritional analysis and micronutrients to a saved draft/recipe.
+     * Prefers deterministic USDA FoodData Central calculation and falls back to client Deep Dive only when USDA is unavailable.
      * Automatically publishes as a Masterpiece if a real dish image is already attached.
      */
     public function upgradeRecipeNutrition() {
@@ -1432,9 +1475,9 @@ public function getAllRecipes() {
         $micros = $data['micros'] ?? [];
         $forcePublish = array_key_exists('publish', $data) && $data['publish'] !== null ? (bool)$data['publish'] : null;
 
-        if ($recipeId <= 0 || ($deepDive === '' && empty($micros))) {
+        if ($recipeId <= 0) {
             http_response_code(400);
-            echo json_encode(["success" => false, "message" => "Recipe ID and nutritional analysis data are required."]);
+            echo json_encode(["success" => false, "message" => "Recipe ID is required."]);
             return;
         }
 
@@ -1450,7 +1493,8 @@ public function getAllRecipes() {
                 $usdaService = new UsdaNutritionService($this->db);
                 $candidate = $usdaService->calculateRecipeNutrition(
                     $storedIngredients,
-                    (string)($recipe['yields'] ?? '4 servings')
+                    (string)($recipe['yields'] ?? '4 servings'),
+                    (string)($recipe['title'] ?? '')
                 );
                 if (!empty($candidate['success'])) {
                     $usdaResult = $candidate;
@@ -1462,18 +1506,25 @@ public function getAllRecipes() {
 
         $effectiveMicros = ($usdaResult && !empty($usdaResult['micros'])) ? $usdaResult['micros'] : $micros;
         $effectiveMacros = ($usdaResult && !empty($usdaResult['macros'])) ? $usdaResult['macros'] : null;
+        $effectiveDeepDive = ($usdaResult && !empty($usdaResult['deep_dive']))
+            ? trim((string)$usdaResult['deep_dive'])
+            : $deepDive;
+
+        if ($usdaResult === null && $effectiveDeepDive === '' && (empty($effectiveMicros) || !is_array($effectiveMicros))) {
+            http_response_code(422);
+            echo json_encode([
+                "success" => false,
+                "usdaUnavailable" => true,
+                "message" => "USDA FoodData Central could not calculate nutrition for this recipe."
+            ]);
+            return;
+        }
 
         try {
             $this->db->beginTransaction();
 
-            $existingNotes = trim($recipe['notes'] ?? '');
-            if ($deepDive !== '' && !str_contains($existingNotes, 'Advanced Nutritional Analysis')) {
-                $updatedNotes = $existingNotes !== ''
-                    ? $existingNotes . "\n\n### Advanced Nutritional Analysis\n" . $deepDive
-                    : "### Advanced Nutritional Analysis\n" . $deepDive;
-            } else {
-                $updatedNotes = $existingNotes;
-            }
+            $existingNotes = trim((string)($recipe['notes'] ?? ''));
+            $updatedNotes = $this->upsertDeepDiveInNotes($existingNotes, $effectiveDeepDive);
 
             $hasImage = $this->hasRealImage($recipe);
             $hasNutrition = (is_array($effectiveMicros) && !empty($effectiveMicros))
@@ -1510,6 +1561,7 @@ public function getAllRecipes() {
             echo json_encode([
                 "success" => true,
                 "notes" => $updatedNotes,
+                "deep_dive" => $effectiveDeepDive,
                 "macros" => $savedMacros ?: null,
                 "micros" => $savedMicros,
                 "usdaCalculated" => $usdaResult !== null,
@@ -2587,7 +2639,11 @@ public function getUserFavorites() {
         $usdaResult = null;
         try {
             $usdaService = new UsdaNutritionService($this->db);
-            $usdaCandidate = $usdaService->calculateRecipeNutrition($variant['ingredients'], $variant['yields']);
+            $usdaCandidate = $usdaService->calculateRecipeNutrition(
+                $variant['ingredients'],
+                $variant['yields'],
+                (string)($variant['title'] ?? '')
+            );
             if (!empty($usdaCandidate['success'])) {
                 $usdaResult = $usdaCandidate;
             }
@@ -2637,8 +2693,11 @@ public function getUserFavorites() {
             ? (int)$parentRecipe['root_recipe_id']
             : (int)$parentRecipe['id'];
         $isMasterpiece = $includeMicros ? 1 : 0;
-        $notes = ($includeMicros && $variant['deep_dive'] !== '')
-            ? "### Advanced Nutritional Analysis\n" . $variant['deep_dive']
+        $effectiveVariantDeepDive = ($includeMicros && $usdaResult && !empty($usdaResult['deep_dive']))
+            ? trim((string)$usdaResult['deep_dive'])
+            : trim((string)($variant['deep_dive'] ?? ''));
+        $notes = ($includeMicros && $effectiveVariantDeepDive !== '')
+            ? "### Advanced Nutritional Analysis\n" . $effectiveVariantDeepDive
             : '';
 
         // Atomic MySQL Transaction: Lock user balance, deduct tokens, insert variant recipe & relations, notify parent author
