@@ -109,4 +109,7 @@ $router->add('DELETE', '/stories', 'StoryController', 'deleteStory');
 $router->add('POST', '/stories/upload-image', 'StoryController', 'uploadStoryImage');
 $router->add('POST', '/stories/like', 'StoryController', 'toggleStoryLike');
 
+// CONTACT FORM (DIRECT EMAIL, NO DATABASE STORAGE)
+$router->add('POST', '/contact', 'ContactController', 'submit');
+
 return $router;

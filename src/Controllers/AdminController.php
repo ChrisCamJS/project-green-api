@@ -15,8 +15,10 @@ class AdminController {
         }
 
         $db = \App\Database::connect();
-        $stmt = $db->query("SELECT id, code, is_active, created_at FROM invite_codes ORDER BY created_at DESC");
-        $codes = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+        \App\Services\InviteCodeService::ensureSchema($db);
+        $stmt = $db->query("SELECT id, code, is_active, max_uses, uses_count, expires_at, created_at FROM invite_codes ORDER BY created_at DESC");
+        $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+        $codes = array_map([\App\Services\InviteCodeService::class, 'formatRow'], $rows);
 
         echo json_encode(["success" => true, "codes" => $codes]);
     }
@@ -29,19 +31,69 @@ class AdminController {
 
         $raw_input = file_get_contents("php://input");
         $data = json_decode($raw_input, true);
-        $customCode = trim($data['code'] ?? '');
+        if (!is_array($data)) {
+            $data = [];
+        }
+
+        $customCode = trim((string)($data['code'] ?? ''));
 
         // Generate a cheeky random code if you didn't provide a custom one
         if (empty($customCode)) {
             $customCode = 'VAULT-' . strtoupper(substr(bin2hex(random_bytes(4)), 0, 6));
         }
 
+        $maxUses = null;
+        $rawMaxUses = $data['max_uses'] ?? null;
+        if ($rawMaxUses !== null && $rawMaxUses !== '') {
+            $validatedMax = is_bool($rawMaxUses) ? false : filter_var($rawMaxUses, FILTER_VALIDATE_INT);
+            if ($validatedMax === false || (int)$validatedMax < 1) {
+                http_response_code(400);
+                echo json_encode([
+                    "success" => false,
+                    "message" => "Max charges must be a whole number of at least 1 (or leave blank for unlimited)."
+                ]);
+                return;
+            }
+            $maxUses = (int)$validatedMax;
+        }
+
+        $expiresAt = null;
+        $rawExpires = trim((string)($data['expires_at'] ?? ''));
+        if ($rawExpires !== '') {
+            $normalized = preg_match('/^\d{4}-\d{2}-\d{2}$/', $rawExpires)
+                ? ($rawExpires . ' 23:59:59')
+                : $rawExpires;
+            $ts = strtotime($normalized);
+            if ($ts === false) {
+                http_response_code(400);
+                echo json_encode([
+                    "success" => false,
+                    "message" => "Please provide a valid expiration date."
+                ]);
+                return;
+            }
+            $expiresAt = date('Y-m-d H:i:s', $ts);
+        }
+
         $db = \App\Database::connect();
-        $stmt = $db->prepare("INSERT INTO invite_codes (code, is_active) VALUES (:code, 1)");
-        
+        \App\Services\InviteCodeService::ensureSchema($db);
+        $stmt = $db->prepare(
+            "INSERT INTO invite_codes (code, is_active, max_uses, uses_count, expires_at)
+             VALUES (:code, 1, :max_uses, 0, :expires_at)"
+        );
+        $stmt->bindValue(':code', $customCode, PDO::PARAM_STR);
+        $stmt->bindValue(':max_uses', $maxUses, $maxUses === null ? PDO::PARAM_NULL : PDO::PARAM_INT);
+        $stmt->bindValue(':expires_at', $expiresAt, $expiresAt === null ? PDO::PARAM_NULL : PDO::PARAM_STR);
+
         try {
-            $stmt->execute([':code' => $customCode]);
-            echo json_encode(["success" => true, "code" => $customCode, "message" => "New VIP pass minted!"]);
+            $stmt->execute();
+            echo json_encode([
+                "success" => true,
+                "code" => $customCode,
+                "max_uses" => $maxUses,
+                "expires_at" => $expiresAt,
+                "message" => "New VIP pass minted!"
+            ]);
         } catch (\PDOException $e) {
             http_response_code(409);
             echo json_encode(["success" => false, "message" => "Code already exists. Try another one."]);
@@ -57,13 +109,14 @@ class AdminController {
         $raw_input = file_get_contents("php://input");
         $data = json_decode($raw_input, true);
         $codeId = $data['id'] ?? null;
-        $isActive = $data['is_active'] ? 1 : 0;
+        $isActive = !empty($data['is_active']) ? 1 : 0;
 
         if (!$codeId) {
             http_response_code(400); return;
         }
 
         $db = \App\Database::connect();
+        \App\Services\InviteCodeService::ensureSchema($db);
         $stmt = $db->prepare("UPDATE invite_codes SET is_active = :isActive WHERE id = :id");
         $stmt->execute([':isActive' => $isActive, ':id' => $codeId]);
 

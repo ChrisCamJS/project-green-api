@@ -79,6 +79,7 @@ class AuthController {
         $requireInviteCode = !isset($env['REQUIRE_INVITE_CODE']) || strtolower((string)$env['REQUIRE_INVITE_CODE']) !== 'false';
 
         $db = \App\Database::connect();
+        \App\Services\InviteCodeService::ensureSchema($db);
         
         $raw_input = file_get_contents("php://input");
         $data = json_decode($raw_input, true);
@@ -121,17 +122,37 @@ class AuthController {
         (new ProfanityFilterService())->assertClean($username, 'username');
 
         // 2. The Dynamic Bouncer Check (Database invite_codes table + optional .env fallback)
+        $matchedInviteId = null;
         if ($requireInviteCode) {
-            $codeSql = "SELECT id FROM invite_codes WHERE code = :code AND is_active = 1 LIMIT 1";
+            $codeSql = "SELECT id, code, is_active, max_uses, uses_count, expires_at FROM invite_codes WHERE code = :code LIMIT 1";
             $codeStmt = $db->prepare($codeSql);
             $codeStmt->execute([':code' => $invite_code]);
-            $validDbCode = (bool)$codeStmt->fetch();
-            $validEnvCode = ($beta_invite_code && hash_equals($beta_invite_code, $invite_code));
+            $codeRow = $codeStmt->fetch(\PDO::FETCH_ASSOC);
 
-            if (!$validDbCode && !$validEnvCode) {
-                http_response_code(403);
-                echo json_encode(["success" => false, "message" => "Access denied. That invite code is either invalid, expired, or totally made up."]);
-                return;
+            if ($codeRow) {
+                if ($codeRow['max_uses'] !== null && (int)$codeRow['uses_count'] >= (int)$codeRow['max_uses']) {
+                    http_response_code(403);
+                    echo json_encode(["success" => false, "message" => "Access denied. That invite code has no remaining uses."]);
+                    return;
+                }
+                if (!empty($codeRow['expires_at']) && strtotime((string)$codeRow['expires_at']) <= time()) {
+                    http_response_code(403);
+                    echo json_encode(["success" => false, "message" => "Access denied. That invite code has expired."]);
+                    return;
+                }
+                if ((int)$codeRow['is_active'] !== 1) {
+                    http_response_code(403);
+                    echo json_encode(["success" => false, "message" => "Access denied. That invite code has been revoked."]);
+                    return;
+                }
+                $matchedInviteId = (int)$codeRow['id'];
+            } else {
+                $validEnvCode = ($beta_invite_code && hash_equals($beta_invite_code, $invite_code));
+                if (!$validEnvCode) {
+                    http_response_code(403);
+                    echo json_encode(["success" => false, "message" => "Access denied. That invite code is either invalid, expired, or totally made up."]);
+                    return;
+                }
             }
         }
 
@@ -146,21 +167,70 @@ class AuthController {
             return;
         }
 
-        // 4. Hash the password, generate verification token, and insert the new user (unverified until email confirmed)
+        // 4. Hash the password, generate verification token, atomically claim invite charge, and insert user
         $password_hash = password_hash($password, PASSWORD_DEFAULT);
         $verificationToken = bin2hex(random_bytes(32));
-        
-        // Setting default tier to 'premium' and tokens to 10 for new testers
-        $insertSql = "INSERT INTO users (username, email, password_hash, account_tier, generation_tokens, is_verified, verification_token)
-                      VALUES (:username, :email, :hash, 'premium', 10, 0, :verification_token)";
-        $insertStmt = $db->prepare($insertSql);
-        
-        $success = $insertStmt->execute([
-            ':username' => $username,
-            ':email' => $email,
-            ':hash' => $password_hash,
-            ':verification_token' => $verificationToken
-        ]);
+
+        $success = false;
+        try {
+            $db->beginTransaction();
+
+            if ($matchedInviteId !== null) {
+                $claimSql = "
+                    UPDATE invite_codes
+                    SET uses_count = uses_count + 1,
+                        is_active = CASE
+                            WHEN max_uses IS NOT NULL AND (uses_count + 1) >= max_uses THEN 0
+                            ELSE is_active
+                        END
+                    WHERE id = :id
+                      AND is_active = 1
+                      AND (expires_at IS NULL OR expires_at > :now)
+                      AND (max_uses IS NULL OR uses_count < max_uses)
+                ";
+                $claimStmt = $db->prepare($claimSql);
+                $claimStmt->execute([
+                    ':id' => $matchedInviteId,
+                    ':now' => date('Y-m-d H:i:s'),
+                ]);
+
+                if ($claimStmt->rowCount() !== 1) {
+                    $db->rollBack();
+                    http_response_code(403);
+                    echo json_encode(["success" => false, "message" => "Access denied. That invite code has expired or reached its maximum number of uses."]);
+                    return;
+                }
+            }
+
+            // Setting default tier to 'premium' and tokens to 10 for new testers
+            $insertSql = "INSERT INTO users (username, email, password_hash, account_tier, generation_tokens, is_verified, verification_token)
+                          VALUES (:username, :email, :hash, 'premium', 10, 0, :verification_token)";
+            $insertStmt = $db->prepare($insertSql);
+
+            $success = $insertStmt->execute([
+                ':username' => $username,
+                ':email' => $email,
+                ':hash' => $password_hash,
+                ':verification_token' => $verificationToken
+            ]);
+
+            if (!$success) {
+                $db->rollBack();
+                http_response_code(500);
+                echo json_encode(["success" => false, "message" => "Something went horribly wrong in the database."]);
+                return;
+            }
+
+            $db->commit();
+        } catch (\Throwable $e) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            error_log('Register invite/user transaction error: ' . $e->getMessage());
+            http_response_code(500);
+            echo json_encode(["success" => false, "message" => "Something went horribly wrong in the database."]);
+            return;
+        }
 
         if ($success) {
             $emailResult = $this->sendVerificationEmail($email, $username, $verificationToken);
