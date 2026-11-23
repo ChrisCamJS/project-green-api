@@ -293,4 +293,196 @@ class AiController {
             'adminContext' => $adminContextBlock !== '' ? $adminContextBlock : null,
         ]);
     }
+
+    /**
+     * POST /ai/google-drive-fetch
+     * Safely downloads or exports a user-shared Google Drive file, Google Doc, or Google Sheet
+     * so the frontend can pass it through Emma's reference document parser without CORS errors.
+     */
+    public function fetchGoogleDriveFile(): void {
+        $this->requireAuth();
+
+        $raw = file_get_contents('php://input');
+        $body = json_decode($raw ?: '', true);
+        $rawUrl = trim((string)($body['url'] ?? ''));
+
+        if ($rawUrl === '') {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'Please paste a Google Drive, Google Docs, or Google Sheets link.']);
+            return;
+        }
+
+        $kind = 'drive';
+        $fileId = null;
+
+        if (preg_match('#docs\.google\.com/document/d/([a-zA-Z0-9_-]{10,120})#i', $rawUrl, $m)) {
+            $kind = 'gdoc';
+            $fileId = $m[1];
+        } elseif (preg_match('#docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]{10,120})#i', $rawUrl, $m)) {
+            $kind = 'gsheet';
+            $fileId = $m[1];
+        } elseif (preg_match('#(?:drive|docs)\.google\.com/(?:file/d/|open\?id=|uc\?[^\#]*id=)([a-zA-Z0-9_-]{10,120})#i', $rawUrl, $m)) {
+            $kind = 'drive';
+            $fileId = $m[1];
+        } elseif (preg_match('#[?&]id=([a-zA-Z0-9_-]{10,120})#i', $rawUrl, $m) && str_contains(strtolower($rawUrl), 'google.com')) {
+            $kind = 'drive';
+            $fileId = $m[1];
+        } elseif (preg_match('/^[a-zA-Z0-9_-]{20,120}$/', $rawUrl)) {
+            $kind = 'drive';
+            $fileId = $rawUrl;
+        }
+
+        if (!$fileId) {
+            http_response_code(400);
+            echo json_encode([
+                'success' => false,
+                'message' => 'That does not look like a valid Google Drive, Google Docs, or Google Sheets link.',
+            ]);
+            return;
+        }
+
+        if ($kind === 'gdoc') {
+            $downloadUrl = "https://docs.google.com/document/d/{$fileId}/export?format=txt";
+        } elseif ($kind === 'gsheet') {
+            $downloadUrl = "https://docs.google.com/spreadsheets/d/{$fileId}/export?format=csv";
+        } else {
+            $downloadUrl = "https://drive.google.com/uc?export=download&id={$fileId}";
+        }
+
+        $responseHeaders = [];
+        $ch = curl_init($downloadUrl);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS => 5,
+            CURLOPT_TIMEOUT => 25,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_USERAGENT => 'TheVeggieVault-GoogleDriveImporter/1.0',
+            CURLOPT_HEADERFUNCTION => static function ($curl, string $headerLine) use (&$responseHeaders): int {
+                $len = strlen($headerLine);
+                $parts = explode(':', $headerLine, 2);
+                if (count($parts) === 2) {
+                    $name = strtolower(trim($parts[0]));
+                    $val = trim($parts[1]);
+                    $responseHeaders[$name] = $val;
+                }
+                return $len;
+            },
+        ]);
+
+        $caBundle = $this->resolveCaBundlePath();
+        if ($caBundle !== null) {
+            curl_setopt($ch, CURLOPT_CAINFO, $caBundle);
+        }
+
+        $fileBytes = curl_exec($ch);
+        $httpStatus = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $contentType = strtolower(trim((string)curl_getinfo($ch, CURLINFO_CONTENT_TYPE)));
+        $curlErr = curl_error($ch);
+        curl_close($ch);
+
+        if ($fileBytes === false || $httpStatus >= 400 || $httpStatus === 0) {
+            http_response_code(422);
+            echo json_encode([
+                'success' => false,
+                'message' => $curlErr
+                    ? "Could not reach Google Drive: {$curlErr}"
+                    : 'Could not download that file from Google Drive. Make sure link sharing is set to "Anyone with the link can view".',
+            ]);
+            return;
+        }
+
+        $maxBytes = 10 * 1024 * 1024; // 10 MB
+        $byteLength = strlen($fileBytes);
+        if ($byteLength === 0) {
+            http_response_code(422);
+            echo json_encode([
+                'success' => false,
+                'message' => 'The shared Google Drive file appears to be empty.',
+            ]);
+            return;
+        }
+        if ($byteLength > $maxBytes) {
+            http_response_code(413);
+            echo json_encode([
+                'success' => false,
+                'message' => 'Google Drive file is larger than the 10 MB maximum limit.',
+            ]);
+            return;
+        }
+
+        $disposition = $responseHeaders['content-disposition'] ?? '';
+        $parsedFileName = '';
+        if ($disposition !== '') {
+            if (preg_match("/filename\\*=UTF-8''([^;\\r\\n]+)/i", $disposition, $dm)) {
+                $parsedFileName = rawurldecode(trim($dm[1], "\"' "));
+            } elseif (preg_match('/filename="([^"]+)"/i', $disposition, $dm)) {
+                $parsedFileName = trim($dm[1]);
+            } elseif (preg_match('/filename=([^;\r\n]+)/i', $disposition, $dm)) {
+                $parsedFileName = trim($dm[1], "\"' ");
+            }
+        }
+
+        $semiPos = strpos($contentType, ';');
+        $cleanMime = $semiPos !== false ? trim(substr($contentType, 0, $semiPos)) : $contentType;
+
+        // If Google returned an HTML sign-in / permission gate instead of a downloaded file
+        if (
+            $cleanMime === 'text/html'
+            && $parsedFileName === ''
+            && (
+                str_contains($fileBytes, 'ServiceLogin')
+                || str_contains($fileBytes, 'accounts.google.com')
+                || str_contains($fileBytes, 'Sign in - Google Accounts')
+            )
+        ) {
+            http_response_code(422);
+            echo json_encode([
+                'success' => false,
+                'message' => 'This Google Drive item is restricted. In Google Drive, click Share -> set General Access to "Anyone with the link", then try again.',
+            ]);
+            return;
+        }
+
+        $shortId = substr($fileId, 0, 8);
+        if ($parsedFileName === '') {
+            if ($kind === 'gdoc') {
+                $parsedFileName = "google-doc-{$shortId}.txt";
+                $cleanMime = 'text/plain';
+            } elseif ($kind === 'gsheet') {
+                $parsedFileName = "google-sheet-{$shortId}.csv";
+                $cleanMime = 'text/csv';
+            } else {
+                $mimeToExt = [
+                    'application/pdf' => 'pdf',
+                    'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => 'docx',
+                    'image/jpeg' => 'jpg',
+                    'image/png' => 'png',
+                    'image/webp' => 'webp',
+                    'text/plain' => 'txt',
+                    'text/markdown' => 'md',
+                    'text/csv' => 'csv',
+                    'application/json' => 'json',
+                ];
+                $ext = $mimeToExt[$cleanMime] ?? 'txt';
+                $parsedFileName = "google-drive-{$shortId}.{$ext}";
+            }
+        }
+
+        if ($kind === 'gdoc' && !preg_match('/\.[a-z0-9]{2,5}$/i', $parsedFileName)) {
+            $parsedFileName .= '.txt';
+            $cleanMime = 'text/plain';
+        } elseif ($kind === 'gsheet' && !preg_match('/\.[a-z0-9]{2,5}$/i', $parsedFileName)) {
+            $parsedFileName .= '.csv';
+            $cleanMime = 'text/csv';
+        }
+
+        echo json_encode([
+            'success' => true,
+            'fileName' => $parsedFileName,
+            'mimeType' => $cleanMime ?: 'application/octet-stream',
+            'size' => $byteLength,
+            'base64Data' => base64_encode($fileBytes),
+        ]);
+    }
 }

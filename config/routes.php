@@ -9,6 +9,7 @@ $router = new Router();
 $router->add('GET', '/recipes', 'RecipeController', 'getAllRecipes');
 $router->add('POST', '/recipes', 'RecipeController', 'createRecipe'); 
 $router->add('GET', '/recipes/single', 'RecipeController', 'getRecipeById');
+$router->add('GET', '/recipes/lineage', 'RecipeController', 'getRecipeLineage');
 
 // AUTHENTICATION & USERS
 $router->add('POST', '/login', 'AuthController', 'login');
@@ -69,6 +70,7 @@ $router->add('POST', '/recipes/save-generated', 'RecipeController', 'saveGenerat
 $router->add('POST', '/ai/chat', 'AiController', 'chat');
 $router->add('POST', '/ai/image', 'AiController', 'generateImage');
 $router->add('POST', '/ai/live-token', 'AiController', 'createLiveToken');
+$router->add('POST', '/ai/google-drive-fetch', 'AiController', 'fetchGoogleDriveFile');
 
 // PAYMENTS & TOKEN PURCHASES
 $router->add('GET', '/payments/config', 'PaymentController', 'getPaymentConfig');

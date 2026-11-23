@@ -8,6 +8,7 @@ use App\Database;
 use App\Services\ImageModerationService;
 use App\Services\ProfanityFilterService;
 use App\Services\RecipeVariantService;
+use App\Services\StoryService;
 use App\Services\UsdaNutritionService;
 
 class RecipeController {
@@ -63,6 +64,7 @@ public function getAllRecipes() {
             $db = Database::connect();
             $this->ensureGlutenFreeBackfilled($db);
             RecipeVariantService::ensureSchema($db);
+            StoryService::ensureSchema($db);
             
             // Check if the user is an admin (assuming you start the session at the top of the method)
             $isAdmin = isset($_SESSION['is_admin']) && $_SESSION['is_admin'] == 1;
@@ -81,7 +83,9 @@ public function getAllRecipes() {
                         pu.username AS parent_author_name,
                         CASE WHEN rf.recipe_id IS NOT NULL THEN 1 ELSE 0 END AS is_favorite,
                         CASE WHEN uf.followed_id IS NOT NULL THEN 1 ELSE 0 END AS is_followed_author,
-                        (SELECT GROUP_CONCAT(i.ingredient_name SEPARATOR '||') FROM ingredients i WHERE i.recipe_id = r.id) AS ingredient_names
+                        (SELECT GROUP_CONCAT(i.ingredient_name SEPARATOR '||') FROM ingredients i WHERE i.recipe_id = r.id) AS ingredient_names,
+                        (SELECT COUNT(*) FROM recipes rv WHERE (rv.parent_recipe_id = r.id OR rv.root_recipe_id = r.id) AND rv.id != r.id AND rv.is_public = 1) AS variant_count,
+                        (SELECT COUNT(*) FROM recipe_stories rs WHERE rs.recipe_id = r.id AND rs.status = 'published') AS story_count
                     FROM recipes r
                     LEFT JOIN users u ON r.user_id = u.id
                     LEFT JOIN recipes pr ON r.parent_recipe_id = pr.id
@@ -149,6 +153,10 @@ public function getAllRecipes() {
                     'createdAt' => $r['created_at'],
                     'averageRating' => (float)($r['average_rating'] ?? 0),
                     'ratingCount' => (int)($r['rating_count'] ?? 0),
+                    'variant_count' => (int)($r['variant_count'] ?? 0),
+                    'variantCount' => (int)($r['variant_count'] ?? 0),
+                    'story_count' => (int)($r['story_count'] ?? 0),
+                    'storyCount' => (int)($r['story_count'] ?? 0),
                     'is_favorite' => (bool)$r['is_favorite'],
                     'isFavorited' => (bool)$r['is_favorite']
                 ];
@@ -227,6 +235,7 @@ public function getAllRecipes() {
             $currentUserId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
             $this->ensureFiberBackfilled($this->db);
             RecipeVariantService::ensureSchema($this->db);
+            StoryService::ensureSchema($this->db);
 
             // 2. Fetch the overarching recipe details, author metadata, and parent/root variant lineage
             $sql = "SELECT r.*, u.username AS author_name,
@@ -241,7 +250,9 @@ public function getAllRecipes() {
                            rr.title AS root_recipe_title,
                            rr.user_id AS root_author_id,
                            ru.username AS root_author_name,
-                           ru.display_name AS root_author_display_name
+                           ru.display_name AS root_author_display_name,
+                           (SELECT COUNT(*) FROM recipes rv WHERE (rv.parent_recipe_id = r.id OR rv.root_recipe_id = r.id) AND rv.id != r.id AND rv.is_public = 1) AS variant_count,
+                           (SELECT COUNT(*) FROM recipe_stories rs WHERE rs.recipe_id = r.id AND rs.status = 'published') AS story_count
                     FROM recipes r 
                     LEFT JOIN users u ON r.user_id = u.id
                     LEFT JOIN recipes pr ON r.parent_recipe_id = pr.id
@@ -287,6 +298,10 @@ public function getAllRecipes() {
             $recipe['parentRecipeTitle'] = $recipe['parent_recipe_title'] ?? null;
             $recipe['parentAuthorId'] = !empty($recipe['parent_author_id']) ? (int)$recipe['parent_author_id'] : null;
             $recipe['parentAuthorName'] = $parentRecipeId !== null ? ($recipe['parent_author_name'] ?? 'Emma (AI)') : null;
+            $recipe['variant_count'] = (int)($recipe['variant_count'] ?? 0);
+            $recipe['variantCount'] = (int)($recipe['variant_count'] ?? 0);
+            $recipe['story_count'] = (int)($recipe['story_count'] ?? 0);
+            $recipe['storyCount'] = (int)($recipe['story_count'] ?? 0);
             $recipe['parentRecipe'] = $parentRecipeId !== null ? [
                 'id' => $parentRecipeId,
                 'title' => $recipe['parent_recipe_title'] ?? 'Original Recipe',
@@ -344,7 +359,9 @@ public function getAllRecipes() {
                        v.title, v.description, v.image_url, v.yields, v.prep_time_mins, v.cook_time_mins,
                        v.is_wfpb, v.is_oil_free, v.is_gluten_free, v.is_sugar_free,
                        v.average_rating, v.rating_count, v.created_at,
-                       vu.username AS author_name, vu.display_name AS author_display_name, vu.profile_image AS author_avatar
+                       vu.username AS author_name, vu.display_name AS author_display_name, vu.profile_image AS author_avatar,
+                       (SELECT COUNT(*) FROM recipes rv WHERE (rv.parent_recipe_id = v.id OR rv.root_recipe_id = v.id) AND rv.id != v.id AND rv.is_public = 1) AS variant_count,
+                       (SELECT COUNT(*) FROM recipe_stories rs WHERE rs.recipe_id = v.id AND rs.status = 'published') AS story_count
                 FROM recipes v
                 LEFT JOIN users vu ON v.user_id = vu.id
                 WHERE (v.parent_recipe_id = :pid OR v.root_recipe_id = :rid)
@@ -392,6 +409,10 @@ public function getAllRecipes() {
                     'isSugarFree' => (bool)$v['is_sugar_free'],
                     'averageRating' => (float)($v['average_rating'] ?? 0),
                     'ratingCount' => (int)($v['rating_count'] ?? 0),
+                    'variant_count' => (int)($v['variant_count'] ?? 0),
+                    'variantCount' => (int)($v['variant_count'] ?? 0),
+                    'story_count' => (int)($v['story_count'] ?? 0),
+                    'storyCount' => (int)($v['story_count'] ?? 0),
                     'createdAt' => $v['created_at'],
                 ];
             }, $rawVariants);
@@ -402,6 +423,229 @@ public function getAllRecipes() {
         } catch (\Exception $e) {
             http_response_code(500);
             echo json_encode(['error' => 'Failed to fetch recipe: ' . $e->getMessage()]);
+        }
+    }
+
+    /**
+     * GET /recipes/lineage?id=<recipeId>
+     * Returns a recipe's full ancestor lineage back to the original root recipe,
+     * all associated public variants (direct children and full family tree branches),
+     * and all published stories written for this recipe.
+     */
+    public function getRecipeLineage() {
+        $id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+        if ($id <= 0) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'Valid recipe ID is required.']);
+            return;
+        }
+
+        try {
+            RecipeVariantService::ensureSchema($this->db);
+            StoryService::ensureSchema($this->db);
+
+            $baseSql = "
+                SELECT r.id, r.user_id, r.parent_recipe_id, r.root_recipe_id, r.is_masterpiece, r.variant_summary,
+                       r.title, r.description, r.image_url, r.yields, r.prep_time_mins, r.cook_time_mins,
+                       r.is_wfpb, r.is_oil_free, r.is_gluten_free, r.is_sugar_free, r.is_public,
+                       r.average_rating, r.rating_count, r.created_at,
+                       u.username AS author_name, u.display_name AS author_display_name, u.profile_image AS author_avatar,
+                       pr.title AS parent_recipe_title, pr.user_id AS parent_author_id, pu.username AS parent_author_name,
+                       (SELECT COUNT(*) FROM recipes rv WHERE (rv.parent_recipe_id = r.id OR rv.root_recipe_id = r.id) AND rv.id != r.id AND rv.is_public = 1) AS variant_count,
+                       (SELECT COUNT(*) FROM recipe_stories rs WHERE rs.recipe_id = r.id AND rs.status = 'published') AS story_count
+                FROM recipes r
+                LEFT JOIN users u ON r.user_id = u.id
+                LEFT JOIN recipes pr ON r.parent_recipe_id = pr.id
+                LEFT JOIN users pu ON pr.user_id = pu.id
+                WHERE r.id = ?
+                LIMIT 1
+            ";
+            $stmt = $this->db->prepare($baseSql);
+            $stmt->execute([$id]);
+            $target = $stmt->fetch(\PDO::FETCH_ASSOC);
+
+            if (!$target) {
+                http_response_code(404);
+                echo json_encode(['success' => false, 'message' => 'Recipe not found.']);
+                return;
+            }
+
+            $formatNode = static function (array $row): array {
+                $pid = !empty($row['parent_recipe_id']) ? (int)$row['parent_recipe_id'] : null;
+                $rid = !empty($row['root_recipe_id']) ? (int)$row['root_recipe_id'] : null;
+                return [
+                    'id' => (int)$row['id'],
+                    'user_id' => !empty($row['user_id']) ? (int)$row['user_id'] : null,
+                    'authorId' => !empty($row['user_id']) ? (int)$row['user_id'] : null,
+                    'authorName' => $row['author_name'] ?? 'Emma (AI)',
+                    'authorDisplayName' => $row['author_display_name'] ?? null,
+                    'authorAvatar' => $row['author_avatar'] ?? null,
+                    'parentRecipeId' => $pid,
+                    'parent_recipe_id' => $pid,
+                    'rootRecipeId' => $rid,
+                    'root_recipe_id' => $rid,
+                    'parentRecipeTitle' => $row['parent_recipe_title'] ?? null,
+                    'parentAuthorId' => !empty($row['parent_author_id']) ? (int)$row['parent_author_id'] : null,
+                    'parentAuthorName' => $pid !== null ? ($row['parent_author_name'] ?? 'Emma (AI)') : null,
+                    'isMasterpiece' => (bool)($row['is_masterpiece'] ?? 0),
+                    'is_masterpiece' => (bool)($row['is_masterpiece'] ?? 0),
+                    'isVariant' => $pid !== null,
+                    'variantSummary' => $row['variant_summary'] ?? null,
+                    'variant_summary' => $row['variant_summary'] ?? null,
+                    'title' => $row['title'] ?? 'Recipe',
+                    'description' => $row['description'] ?? '',
+                    'imageUrl' => $row['image_url'] ?? '',
+                    'image_url' => $row['image_url'] ?? '',
+                    'yields' => $row['yields'] ?? '',
+                    'prepTime' => (int)($row['prep_time_mins'] ?? 0),
+                    'cookTime' => (int)($row['cook_time_mins'] ?? 0),
+                    'isWfpb' => (bool)($row['is_wfpb'] ?? 1),
+                    'isOilFree' => (bool)($row['is_oil_free'] ?? 1),
+                    'isGlutenFree' => (bool)($row['is_gluten_free'] ?? 0),
+                    'isSugarFree' => (bool)($row['is_sugar_free'] ?? 1),
+                    'isPublic' => (bool)($row['is_public'] ?? 1),
+                    'averageRating' => (float)($row['average_rating'] ?? 0),
+                    'ratingCount' => (int)($row['rating_count'] ?? 0),
+                    'variantCount' => (int)($row['variant_count'] ?? 0),
+                    'variant_count' => (int)($row['variant_count'] ?? 0),
+                    'storyCount' => (int)($row['story_count'] ?? 0),
+                    'story_count' => (int)($row['story_count'] ?? 0),
+                    'createdAt' => $row['created_at'] ?? null,
+                ];
+            };
+
+            $formattedTarget = $formatNode($target);
+
+            // Walk upward through parent_recipe_id to build the full ancestor chain back to Generation 0
+            $ancestors = [];
+            $visitedIds = [(int)$target['id'] => true];
+            $currParentId = !empty($target['parent_recipe_id']) ? (int)$target['parent_recipe_id'] : 0;
+            $hopStmt = $this->db->prepare($baseSql);
+            $hops = 0;
+
+            while ($currParentId > 0 && !isset($visitedIds[$currParentId]) && $hops < 20) {
+                $visitedIds[$currParentId] = true;
+                $hopStmt->execute([$currParentId]);
+                $parentRow = $hopStmt->fetch(\PDO::FETCH_ASSOC);
+                if (!$parentRow) {
+                    break;
+                }
+                $ancestors[] = $formatNode($parentRow);
+                $currParentId = !empty($parentRow['parent_recipe_id']) ? (int)$parentRow['parent_recipe_id'] : 0;
+                $hops++;
+            }
+
+            // Reverse so index 0 is the original Root Recipe (Generation 0)
+            $ancestors = array_reverse($ancestors);
+            foreach ($ancestors as $idx => &$ancNode) {
+                $ancNode['generation'] = $idx;
+            }
+            unset($ancNode);
+            $formattedTarget['generation'] = count($ancestors);
+
+            $treeRootId = !empty($target['root_recipe_id'])
+                ? (int)$target['root_recipe_id']
+                : (!empty($ancestors) ? (int)$ancestors[0]['id'] : (int)$target['id']);
+
+            // Fetch all public variants associated with this recipe OR its broader family tree
+            $variantsSql = "
+                SELECT v.id, v.user_id, v.parent_recipe_id, v.root_recipe_id, v.is_masterpiece, v.variant_summary,
+                       v.title, v.description, v.image_url, v.yields, v.prep_time_mins, v.cook_time_mins,
+                       v.is_wfpb, v.is_oil_free, v.is_gluten_free, v.is_sugar_free, v.is_public,
+                       v.average_rating, v.rating_count, v.created_at,
+                       vu.username AS author_name, vu.display_name AS author_display_name, vu.profile_image AS author_avatar,
+                       pv.title AS parent_recipe_title, pv.user_id AS parent_author_id, pvu.username AS parent_author_name,
+                       (SELECT COUNT(*) FROM recipes rv WHERE (rv.parent_recipe_id = v.id OR rv.root_recipe_id = v.id) AND rv.id != v.id AND rv.is_public = 1) AS variant_count,
+                       (SELECT COUNT(*) FROM recipe_stories rs WHERE rs.recipe_id = v.id AND rs.status = 'published') AS story_count
+                FROM recipes v
+                LEFT JOIN users vu ON v.user_id = vu.id
+                LEFT JOIN recipes pv ON v.parent_recipe_id = pv.id
+                LEFT JOIN users pvu ON pv.user_id = pvu.id
+                WHERE (
+                    v.parent_recipe_id = :target_id_1
+                    OR v.root_recipe_id = :target_id_2
+                    OR v.root_recipe_id = :tree_root_1
+                    OR v.parent_recipe_id = :tree_root_2
+                )
+                  AND v.id != :self_id
+                  AND v.is_public = 1
+                ORDER BY
+                  CASE WHEN v.parent_recipe_id = :order_target_id THEN 0 ELSE 1 END ASC,
+                  v.created_at DESC,
+                  v.id DESC
+            ";
+            $vStmt = $this->db->prepare($variantsSql);
+            $vStmt->execute([
+                ':target_id_1' => $id,
+                ':target_id_2' => $id,
+                ':tree_root_1' => $treeRootId,
+                ':tree_root_2' => $treeRootId,
+                ':self_id' => $id,
+                ':order_target_id' => $id,
+            ]);
+            $rawVariants = $vStmt->fetchAll(\PDO::FETCH_ASSOC);
+
+            $variants = array_map(function (array $row) use ($formatNode, $id): array {
+                $node = $formatNode($row);
+                $node['isDirectChild'] = ((int)($row['parent_recipe_id'] ?? 0) === $id);
+                return $node;
+            }, $rawVariants);
+
+            // Fetch all published stories associated with this recipe
+            $storiesSql = "
+                SELECT s.id, s.recipe_id, s.user_id, s.title, s.slug, s.excerpt,
+                       s.cover_image, s.read_time_minutes, s.status, s.created_at, s.updated_at,
+                       u.username AS author_name, u.display_name AS author_display_name, u.profile_image AS author_avatar,
+                       r.title AS recipe_title, r.image_url AS recipe_image_url,
+                       (SELECT COUNT(*) FROM story_likes sl WHERE sl.story_id = s.id) AS like_count
+                FROM recipe_stories s
+                LEFT JOIN users u ON s.user_id = u.id
+                LEFT JOIN recipes r ON s.recipe_id = r.id
+                WHERE s.recipe_id = :recipe_id
+                  AND s.status = 'published'
+                ORDER BY s.created_at DESC, s.id DESC
+            ";
+            $sStmt = $this->db->prepare($storiesSql);
+            $sStmt->execute([':recipe_id' => $id]);
+            $rawStories = $sStmt->fetchAll(\PDO::FETCH_ASSOC);
+
+            $stories = array_map(static function (array $s): array {
+                return [
+                    'id' => (int)$s['id'],
+                    'recipeId' => (int)$s['recipe_id'],
+                    'recipe_id' => (int)$s['recipe_id'],
+                    'recipeTitle' => $s['recipe_title'] ?? 'Recipe',
+                    'recipeImageUrl' => $s['recipe_image_url'] ?? '',
+                    'authorId' => !empty($s['user_id']) ? (int)$s['user_id'] : null,
+                    'authorName' => $s['author_name'] ?? 'Chef',
+                    'authorDisplayName' => $s['author_display_name'] ?? null,
+                    'authorAvatar' => $s['author_avatar'] ?? null,
+                    'title' => $s['title'],
+                    'slug' => $s['slug'],
+                    'excerpt' => $s['excerpt'],
+                    'coverImage' => $s['cover_image'] ?: ($s['recipe_image_url'] ?? null),
+                    'readTimeMinutes' => (int)($s['read_time_minutes'] ?? 1),
+                    'likeCount' => (int)($s['like_count'] ?? 0),
+                    'status' => $s['status'] ?? 'published',
+                    'createdAt' => $s['created_at'],
+                    'updatedAt' => $s['updated_at'],
+                ];
+            }, $rawStories);
+
+            echo json_encode([
+                'success' => true,
+                'recipe' => $formattedTarget,
+                'treeRootId' => $treeRootId,
+                'ancestors' => $ancestors,
+                'variants' => $variants,
+                'stories' => $stories,
+            ]);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            echo json_encode([
+                'success' => false,
+                'message' => 'Failed to load recipe lineage: ' . $e->getMessage(),
+            ]);
         }
     }
     public function saveGeneratedRecipe() {
@@ -1662,6 +1906,7 @@ public function getUserFavorites() {
 
             // Fetch only recipes present in recipe_favorites for this user
             RecipeVariantService::ensureSchema($db);
+            StoryService::ensureSchema($db);
             $sql = "SELECT r.id, r.user_id, r.parent_recipe_id, r.root_recipe_id, r.is_masterpiece, r.variant_summary,
                            r.title, r.description, r.image_url, r.yields, 
                            r.prep_time_mins, r.cook_time_mins, r.is_wfpb, r.is_oil_free,
@@ -1674,7 +1919,9 @@ public function getUserFavorites() {
                            pr.title AS parent_recipe_title,
                            pr.user_id AS parent_author_id,
                            pu.username AS parent_author_name,
-                           CASE WHEN uf.followed_id IS NOT NULL THEN 1 ELSE 0 END AS is_followed_author
+                           CASE WHEN uf.followed_id IS NOT NULL THEN 1 ELSE 0 END AS is_followed_author,
+                           (SELECT COUNT(*) FROM recipes rv WHERE (rv.parent_recipe_id = r.id OR rv.root_recipe_id = r.id) AND rv.id != r.id AND rv.is_public = 1) AS variant_count,
+                           (SELECT COUNT(*) FROM recipe_stories rs WHERE rs.recipe_id = r.id AND rs.status = 'published') AS story_count
                     FROM recipe_favorites rf
                     JOIN recipes r ON rf.recipe_id = r.id
                     LEFT JOIN users u ON r.user_id = u.id
@@ -1750,6 +1997,11 @@ public function getUserFavorites() {
                     'averageRating' => (float)($r['average_rating'] ?? 0),
                     'rating_count' => (int)($r['rating_count'] ?? 0),
                     'ratingCount' => (int)($r['rating_count'] ?? 0),
+
+                    'variant_count' => (int)($r['variant_count'] ?? 0),
+                    'variantCount' => (int)($r['variant_count'] ?? 0),
+                    'story_count' => (int)($r['story_count'] ?? 0),
+                    'storyCount' => (int)($r['story_count'] ?? 0),
 
                     'isOwner' => ((int)$r['user_id'] === (int)$userId),
                     'is_favorite' => true,

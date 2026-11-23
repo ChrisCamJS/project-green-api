@@ -177,6 +177,7 @@ class ProfileController {
         }
 
         RecipeVariantService::ensureSchema($this->db);
+        StoryService::ensureSchema($this->db);
 
         $recipesSql = "SELECT r.id, r.user_id, r.parent_recipe_id, r.root_recipe_id, r.is_masterpiece, r.variant_summary,
                               r.title, r.description, r.image_url, r.yields,
@@ -189,7 +190,9 @@ class ProfileController {
                               pr.title AS parent_recipe_title,
                               pr.user_id AS parent_author_id,
                               pu.username AS parent_author_name,
-                              CASE WHEN rf.recipe_id IS NOT NULL THEN 1 ELSE 0 END AS is_favorite
+                              CASE WHEN rf.recipe_id IS NOT NULL THEN 1 ELSE 0 END AS is_favorite,
+                              (SELECT COUNT(*) FROM recipes rv WHERE (rv.parent_recipe_id = r.id OR rv.root_recipe_id = r.id) AND rv.id != r.id AND rv.is_public = 1) AS variant_count,
+                              (SELECT COUNT(*) FROM recipe_stories rs WHERE rs.recipe_id = r.id AND rs.status = 'published') AS story_count
                        FROM recipes r
                        LEFT JOIN users u ON r.user_id = u.id
                        LEFT JOIN recipes pr ON r.parent_recipe_id = pr.id
@@ -246,6 +249,10 @@ class ProfileController {
                 'createdAt' => $r['created_at'],
                 'averageRating' => (float)($r['average_rating'] ?? 0),
                 'ratingCount' => (int)($r['rating_count'] ?? 0),
+                'variant_count' => (int)($r['variant_count'] ?? 0),
+                'variantCount' => (int)($r['variant_count'] ?? 0),
+                'story_count' => (int)($r['story_count'] ?? 0),
+                'storyCount' => (int)($r['story_count'] ?? 0),
                 'is_favorite' => (bool)$r['is_favorite'],
                 'isFavorited' => (bool)$r['is_favorite']
             ];
