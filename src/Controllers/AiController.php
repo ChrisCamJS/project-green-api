@@ -216,6 +216,11 @@ class AiController {
             return;
         }
 
+        $noPeopleClause = 'Focus strictly on the prepared food, dishware, and tabletop styling. Strictly NO people, persons, human figures, chefs, grandmothers, grandpas, family members, hands, faces, silhouettes, or background characters — food and table setting only in the scene.';
+        if (!stripos($prompt, 'no people') && !stripos($prompt, 'food only') && !stripos($prompt, 'food and table setting only')) {
+            $prompt .= ' ' . $noPeopleClause;
+        }
+
         $payload = [
             'contents' => [
                 ['parts' => [['text' => $prompt]]]

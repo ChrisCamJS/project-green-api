@@ -185,13 +185,13 @@ class RecipeVariantService {
             . "\"{$changesRequested}\"\n\n"
             . "YOUR RULES:\n"
             . "1. ANTI-CLOUT-STEALING GUARDRAIL: Evaluate whether the user's request introduces a genuine culinary change (e.g., swapping/adding/removing ingredients, changing spice/flavor profile, scaling proportions meaningfully, adapting for oil-free/gluten-free/allergies, or changing cooking method such as baking vs air-frying). If the request is gibberish, empty, asks for no real change, or only renames the title without changing the food, set `is_meaningful_change` to FALSE and write a cheeky, polite British explanation in `rejection_reason`.\n"
-            . "2. PRESERVE CORE SPIRIT: Keep the foundational structure of the parent recipe intact while weaving the user's requested changes seamlessly into `ingredients`, `instructions`, `prep_time_mins`, `cook_time_mins`, `yields`, and dietary flags (`is_oil_free`, `is_gluten_free`, `is_sugar_free`). Keep the recipe 100% plant-based (vegan).\n"
+            . "2. PRESERVE CORE SPIRIT: Keep the foundational structure of the parent recipe intact while weaving the user's requested changes seamlessly into `ingredients`, `instructions`, `prep_time_mins`, `cook_time_mins`, `yields`, and dietary flags (`is_oil_free`, `is_gluten_free`, `is_sugar_free`). Keep the recipe 100% plant-based (vegan). If the modifications do NOT ask for gluten-free, you have full reign to use wholesome wheat-based ingredients (whole wheat flour, whole wheat pasta, spelt, farro, barley, rye, seitan) and do NOT unnecessarily avoid wheat or default to gluten-free alternatives.\n"
             . "3. {$titleInstruction}\n"
             . "4. Write a concise `variant_summary` (1 sentence, max 220 characters) summarizing specifically what changed compared to the original recipe (e.g. \"Swapped soy sauce for coconut aminos, added roasted pineapple, and made it 100% gluten-free.\").\n"
             . "5. Write a purely culinary `description` (2-3 sentences, no greetings or usernames).\n"
             . "6. Calculate accurate per-serving `macros` (`calories`, `protein_g`, `carbs_g`, `fat_g`, `fiber_g`).\n"
             . "7. {$microsInstruction}\n"
-            . "8. Provide a vivid `image_prompt` describing the finished plated variant dish for food photography."
+            . "8. Provide a vivid `image_prompt` describing the finished plated variant dish for food photography. Focus strictly on the food, garnishes, dishware, and tabletop styling. NEVER include people, persons, hands, faces, silhouettes, chefs, grandmas, or human figures in the scene."
             . $allergyClause;
 
         $payload = [
@@ -379,7 +379,7 @@ class RecipeVariantService {
             . "Served on {$surface}. Lighting: {$lighting}. Camera angle: {$angle}. "
             . ($kitchenColor !== '' ? "Kitchen color palette: {$kitchenColor}. " : '')
             . ($customDetails !== '' ? "Additional styling: {$customDetails}. " : '')
-            . "Ultra-appetizing, vibrant fresh plant ingredients, shallow depth of field, high resolution, no text or watermarks.";
+            . "Ultra-appetizing, vibrant fresh plant ingredients, shallow depth of field, high resolution, no text or watermarks. Focus strictly on the food, dishware, and tabletop: strictly NO people, human figures, chefs, grandmas, hands, faces, or background silhouettes — food only in the scene.";
 
         $payload = [
             'contents' => [

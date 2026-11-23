@@ -23,29 +23,62 @@ class RecipeController {
     }
 
     /**
-     * Auto-backfill legacy rows if the live recipes table has is_gluten_free defaulting to 0 everywhere.
+     * Determines whether a recipe is naturally gluten-free based on its title, description,
+     * notes, and ingredients.
+     */
+    public static function detectNaturallyGlutenFree(string $title = '', string $description = '', string $notes = '', array $ingredients = []): bool {
+        $fullText = $title . ' ' . $description . ' ' . $notes;
+        if (preg_match('/\bnot\s+gluten[- ]?free\b/i', $fullText)) {
+            return false;
+        }
+        if (preg_match('/(^|[^a-z])(gluten[- ]?free|certified gf|golden gf)([^a-z]|$)/i', $fullText)) {
+            return true;
+        }
+
+        $titleGlutenRegex = '/\b(wheat|whole[- ]?wheat|farro|spelt|barley|rye|bulgur|couscous|kamut|seitan|vital wheat gluten|sourdough|baguette|ciabatta|breadsticks?|wellington|strudel|croissant|sandwich|sub\b|hoagie)\b/i';
+        if (preg_match($titleGlutenRegex, $title)) {
+            return false;
+        }
+
+        $glutenRegex = '/\b(whole[- ]?wheat|wheat(?:en)?|all[- ]?purpose flour|bread flour|pastry flour|white flour|unbleached flour|semolina|bulgur|kamut|triticale|durum|farina|graham flour|spelt|barley|rye|couscous|farro|orzo|seitan|vital wheat gluten|puff pastry|phyllo|filo|breadcrumbs|panko|soy sauce|shoyu|teriyaki|gochujang|lasagna|linguine|spaghetti|fettuccine|penne|macaroni|ramen|udon|flour tortilla|hoagie|baguette|ciabatta|sourdough|crusty italian|pita|bread|breadsticks?|malt\b|brewer\'?s yeast|\bflour\b)\b/i';
+
+        $gfSafeRegex = '/\b(gluten[- ]?free|certified gf|tamari|coconut aminos|brown rice|white rice|wild rice|rice noodle|rice flour|oats?\b|rolled oats|oat flour|almond flour|coconut flour|tapioca|cassava|chickpea flour|garbanzo flour|corn tortilla|cornmeal|cornstarch|arrowroot|buckwheat|quinoa|sorghum|millet|teff|flaxseed meal|potato starch)\b/i';
+
+        if (empty($ingredients)) {
+            return false;
+        }
+
+        foreach ($ingredients as $ing) {
+            $name = is_array($ing) ? ($ing['ingredient_name'] ?? $ing['name'] ?? '') : (string)$ing;
+            $name = trim($name);
+            if ($name === '' || str_starts_with($name, '##') || str_ends_with($name, ':') || str_ends_with($name, '**')) {
+                continue;
+            }
+            if (preg_match($glutenRegex, $name) && !preg_match($gfSafeRegex, $name)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Auto-backfill legacy rows if the live recipes table has is_gluten_free defaulting to 0 for naturally GF dishes.
      */
     private function ensureGlutenFreeBackfilled(\PDO $db): void {
         try {
-            $counts = $db->query("SELECT COUNT(*) AS total, COALESCE(SUM(is_gluten_free), 0) AS gf_count FROM recipes")->fetch(\PDO::FETCH_ASSOC);
-            if (!$counts || (int)$counts['total'] === 0 || (int)$counts['gf_count'] > 0) {
-                return;
+            $recipesWithZero = $db->query("SELECT r.id, r.title, r.description, r.notes FROM recipes r WHERE r.is_gluten_free = 0")->fetchAll(\PDO::FETCH_ASSOC);
+            if (!empty($recipesWithZero)) {
+                $ingStmt = $db->prepare("SELECT ingredient_name FROM ingredients WHERE recipe_id = ?");
+                $updateStmt = $db->prepare("UPDATE recipes SET is_gluten_free = 1 WHERE id = ?");
+                foreach ($recipesWithZero as $rz) {
+                    $ingStmt->execute([(int)$rz['id']]);
+                    $ings = $ingStmt->fetchAll(\PDO::FETCH_COLUMN);
+                    if (!empty($ings) && self::detectNaturallyGlutenFree($rz['title'] ?? '', $rz['description'] ?? '', $rz['notes'] ?? '', $ings)) {
+                        $updateStmt->execute([(int)$rz['id']]);
+                    }
+                }
             }
-            $db->exec("
-                UPDATE recipes r
-                SET r.is_gluten_free = CASE
-                    WHEN LOWER(CONCAT_WS(' ', r.title, r.description, r.notes)) REGEXP '(^|[^a-z])(gluten[ -]?free|certified gf|golden gf)([^a-z]|$)'
-                         AND LOWER(CONCAT_WS(' ', r.title, r.description, r.notes)) NOT REGEXP 'not[ ]+gluten[ -]?free' THEN 1
-                    WHEN LOWER(r.title) REGEXP '(^|[^a-z])(wheat|bread|breadstick|breadsticks|sandwich|sub|wellington|strudel|pretzel|pretzels|pierogi|pierogies|galette|empanada|empanadas|lasagna|mac &|macaroni|spaghetti|fettuccine|linguine|penne|pasta|noodles|noodle|ramen|udon|couscous|barley|rye|spelt|farro|orzo|seitan|pancake|pancakes|waffle|waffles|muffin|muffins|cobbler|flautas|burrito|burritos|toast|hoagie|baguette|ciabatta|sourdough|pita)([^a-z]|$)' THEN 0
-                    WHEN EXISTS (
-                        SELECT 1 FROM ingredients i
-                        WHERE i.recipe_id = r.id
-                          AND LOWER(i.ingredient_name) REGEXP '(whole[- ]?wheat|wheat flour|all-purpose flour|bread flour|pastry flour|white flour|spelt|barley|rye|couscous|farro|orzo|seitan|vital wheat gluten|puff pastry|phyllo|filo|breadcrumbs|panko|soy sauce|gochujang|lasagna|linguine|spaghetti|fettuccine|penne|macaroni|ramen|udon|flour tortilla|hoagie|baguette|ciabatta|sourdough|crusty italian|pita)'
-                          AND LOWER(i.ingredient_name) NOT REGEXP '(gluten[ -]?free|tamari|coconut aminos|brown rice|rice noodle|rice flour|oat flour|almond flour|chickpea flour|corn tortilla|buckwheat)'
-                    ) THEN 0
-                    ELSE 1
-                END
-            ");
         } catch (\Throwable $e) {
             // Non-fatal: continue returning recipes cleanly even if column isn't writable
         }
@@ -673,6 +706,14 @@ public function getAllRecipes() {
         $notes = $data['notes'] ?? '';
         $isOilFree = isset($data['isOilFree']) ? (int)(bool)$data['isOilFree'] : 1;
         $isGlutenFree = isset($data['isGlutenFree']) ? (int)(bool)$data['isGlutenFree'] : 0;
+        if ($isGlutenFree === 0) {
+            $isGlutenFree = self::detectNaturallyGlutenFree(
+                (string)($data['title'] ?? ''),
+                $description,
+                $notes,
+                is_array($ingredients) ? $ingredients : []
+            ) ? 1 : 0;
+        }
         $isSugarFree = isset($data['isSugarFree']) ? (int)(bool)$data['isSugarFree'] : 1;
         $isMasterpieceFlag = !empty($data['isMasterpiece']);
 
@@ -1122,6 +1163,16 @@ public function getAllRecipes() {
             ? (int)(bool)$data['isPublic']
             : (array_key_exists('isDraft', $data) ? ($data['isDraft'] ? 0 : 1) : 1);
 
+        $isGlutenFree = array_key_exists('isGlutenFree', $data) ? (int)(bool)$data['isGlutenFree'] : 0;
+        if ($isGlutenFree === 0 && !empty($data['ingredients'])) {
+            $isGlutenFree = self::detectNaturallyGlutenFree(
+                $title,
+                trim((string)($data['description'] ?? '')),
+                trim((string)($data['notes'] ?? '')),
+                is_array($data['ingredients']) ? $data['ingredients'] : []
+            ) ? 1 : 0;
+        }
+
         try {
             $db->beginTransaction();
 
@@ -1139,7 +1190,7 @@ public function getAllRecipes() {
                 ':prep_time_mins' => max(0, (int)($data['prepTime'] ?? 0)),
                 ':cook_time_mins' => max(0, (int)($data['cookTime'] ?? 0)),
                 ':is_oil_free' => array_key_exists('isOilFree', $data) ? (int)(bool)$data['isOilFree'] : 1,
-                ':is_gluten_free' => array_key_exists('isGlutenFree', $data) ? (int)(bool)$data['isGlutenFree'] : 0,
+                ':is_gluten_free' => $isGlutenFree,
                 ':is_sugar_free' => array_key_exists('isSugarFree', $data) ? (int)(bool)$data['isSugarFree'] : 1,
                 ':is_public' => $isPublic,
                 ':image_source' => $imageSource,
@@ -1320,6 +1371,14 @@ public function getAllRecipes() {
         $isGlutenFree = array_key_exists('isGlutenFree', $data)
             ? (int)(bool)$data['isGlutenFree']
             : (int)($existing['is_gluten_free'] ?? 0);
+        if ($isGlutenFree === 0 && !empty($data['ingredients'])) {
+            $isGlutenFree = self::detectNaturallyGlutenFree(
+                (string)($data['title'] ?? $existing['title'] ?? ''),
+                (string)($data['description'] ?? $existing['description'] ?? ''),
+                (string)($data['notes'] ?? $existing['notes'] ?? ''),
+                is_array($data['ingredients']) ? $data['ingredients'] : []
+            ) ? 1 : 0;
+        }
         $isSugarFree = array_key_exists('isSugarFree', $data)
             ? (int)(bool)$data['isSugarFree']
             : (int)($existing['is_sugar_free'] ?? 1);
@@ -3006,6 +3065,16 @@ public function getUserFavorites() {
                     1, :is_masterpiece, :image_source
                 )
             ");
+            $variantIsGlutenFree = !empty($variant['is_gluten_free']) ? 1 : 0;
+            if ($variantIsGlutenFree === 0 && !empty($variant['ingredients'])) {
+                $variantIsGlutenFree = self::detectNaturallyGlutenFree(
+                    $variant['title'] ?? '',
+                    $variant['description'] ?? '',
+                    $notes,
+                    is_array($variant['ingredients']) ? $variant['ingredients'] : []
+                ) ? 1 : 0;
+            }
+
             $insRecipe->execute([
                 ':user_id' => $userId,
                 ':parent_id' => $parentRecipeId,
@@ -3019,7 +3088,7 @@ public function getUserFavorites() {
                 ':prep_time' => $variant['prep_time_mins'],
                 ':cook_time' => $variant['cook_time_mins'],
                 ':is_oil_free' => $variant['is_oil_free'],
-                ':is_gluten_free' => $variant['is_gluten_free'],
+                ':is_gluten_free' => $variantIsGlutenFree,
                 ':is_sugar_free' => $variant['is_sugar_free'],
                 ':is_masterpiece' => $isMasterpiece,
                 ':image_source' => $finalImageSource,
