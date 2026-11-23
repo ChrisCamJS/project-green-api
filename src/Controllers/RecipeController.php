@@ -650,6 +650,7 @@ public function getAllRecipes() {
     }
     public function saveGeneratedRecipe() {
         $db = Database::connect();
+        RecipeVariantService::ensureSchema($db);
         $data = json_decode(file_get_contents("php://input"), true);
 
         if (session_status() === PHP_SESSION_NONE) {
@@ -673,11 +674,13 @@ public function getAllRecipes() {
         $isOilFree = isset($data['isOilFree']) ? (int)(bool)$data['isOilFree'] : 1;
         $isGlutenFree = isset($data['isGlutenFree']) ? (int)(bool)$data['isGlutenFree'] : 0;
         $isSugarFree = isset($data['isSugarFree']) ? (int)(bool)$data['isSugarFree'] : 1;
+        $isMasterpieceFlag = !empty($data['isMasterpiece']);
 
         $isPublic = 0; 
         $imageSource = 'none';
+        $hasRealImage = false;
         
-        $rawImageUrl = $data['imageUrl'] ?? ''; 
+        $rawImageUrl = trim((string)($data['imageUrl'] ?? '')); 
         $finalImageUrl = '';
 
         // 2. Handle the Image
@@ -714,12 +717,14 @@ public function getAllRecipes() {
 
             file_put_contents($uploadDir . $filename, $decodedData);
             $finalImageUrl = '/images/' . $filename;
-            
-            $imageSource = 'ai'; 
-            $hasMasterpieceNutrition = (!empty($data['micros']) && is_array($data['micros'])) || str_contains($notes, 'Advanced Nutritional Analysis');
-            $isPublic = $hasMasterpieceNutrition ? 1 : 0; // Only publish if both image and full nutrition are included
+            $imageSource = 'ai';
+            $hasRealImage = true;
+        } elseif ($rawImageUrl !== '' && !str_contains($rawImageUrl, 'default-veggie-vault-placeholder')) {
+            $finalImageUrl = $rawImageUrl;
+            $imageSource = 'ai';
+            $hasRealImage = true;
         } else {
-            $finalImageUrl = $rawImageUrl ?: '/images/default-veggie-vault-placeholder.jpg';
+            $finalImageUrl = '/images/default-veggie-vault-placeholder.jpg';
         }
 
         // Compute deterministic USDA FoodData Central macros/micros BEFORE opening SQL transaction
@@ -737,9 +742,15 @@ public function getAllRecipes() {
         }
 
         $clientMicros = $data['micros'] ?? [];
-        $wantsFullMicros = (!empty($clientMicros) && is_array($clientMicros))
-            || $isPublic
-            || str_contains($notes, 'Advanced Nutritional Analysis');
+        $hasMasterpieceNutrition = (!empty($clientMicros) && is_array($clientMicros))
+            || ($usdaResult && !empty($usdaResult['micros']))
+            || str_contains($notes, 'Advanced Nutritional Analysis')
+            || $isMasterpieceFlag;
+
+        $isPublic = ($hasRealImage && $hasMasterpieceNutrition) ? 1 : 0;
+        $isMasterpieceCol = ($isPublic || $isMasterpieceFlag) ? 1 : 0;
+
+        $wantsFullMicros = $hasMasterpieceNutrition || $isPublic;
         if ($wantsFullMicros && $usdaResult && !empty($usdaResult['deep_dive'])) {
             $notes = $this->upsertDeepDiveInNotes($notes, (string)$usdaResult['deep_dive']);
         }
@@ -756,9 +767,9 @@ public function getAllRecipes() {
             $userId = $_SESSION['user_id'] ?? null;
 
             $sqlRecipe = "INSERT INTO recipes 
-                (user_id, title, description, notes, image_url, yields, prep_time_mins, cook_time_mins, is_wfpb, is_oil_free, is_gluten_free, is_sugar_free, is_public, image_source) 
+                (user_id, title, description, notes, image_url, yields, prep_time_mins, cook_time_mins, is_wfpb, is_oil_free, is_gluten_free, is_sugar_free, is_public, is_masterpiece, image_source) 
                 VALUES 
-                (:user_id, :title, :description, :notes, :image_url, :yields, :prep_time_mins, :cook_time_mins, 1, :is_oil_free, :is_gluten_free, :is_sugar_free, :is_public, :image_source)";
+                (:user_id, :title, :description, :notes, :image_url, :yields, :prep_time_mins, :cook_time_mins, 1, :is_oil_free, :is_gluten_free, :is_sugar_free, :is_public, :is_masterpiece, :image_source)";
             
             $stmtRecipe = $db->prepare($sqlRecipe);
             $stmtRecipe->execute([
@@ -774,6 +785,7 @@ public function getAllRecipes() {
                 ':is_gluten_free' => $isGlutenFree,
                 ':is_sugar_free' => $isSugarFree,
                 ':is_public' => $isPublic,
+                ':is_masterpiece' => $isMasterpieceCol,
                 ':image_source' => $imageSource
             ]);
             
@@ -876,7 +888,12 @@ public function getAllRecipes() {
             $db->commit();
 
             $msg = $isPublic ? "Brilliant! Full recipe vaulted and published to the feed." : "Smashing! Text draft locked in your private vault.";
-            echo json_encode(["success" => true, "recipeId" => (int)$recipeId, "message" => $msg]);
+            echo json_encode([
+                "success" => true,
+                "recipeId" => (int)$recipeId,
+                "isPublic" => (bool)$isPublic,
+                "message" => $msg,
+            ]);
 
         } catch (\Exception $e) {
             // Something broke. Cancel the entire transaction.
