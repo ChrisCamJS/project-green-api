@@ -815,4 +815,762 @@ class ProfileController {
             "following" => $following
         ]);
     }
+
+    /**
+     * GET /users/profile-og-image?identifier=...(&mode=achievements&badge_key=...&level=...)
+     * Dynamically composites the user's circular profile avatar and @username pill
+     * (plus an Achievement Showcase card when sharing achievements) onto the standard
+     * Veggie Vault OGP card (1200x630 JPEG).
+     */
+    public function getProfileOgImage() {
+        $rawIdentifier = trim((string)($_GET['identifier'] ?? ''));
+        $lookup = ltrim($rawIdentifier, '@');
+        $mode = ($_GET['mode'] ?? 'profile') === 'achievements' ? 'achievements' : 'profile';
+        $badgeKey = trim((string)($_GET['badge_key'] ?? ''));
+        $badgeLevel = isset($_GET['level']) && ctype_digit((string)$_GET['level']) ? (int)$_GET['level'] : 0;
+
+        $user = null;
+        if ($lookup !== '') {
+            if (ctype_digit($lookup)) {
+                $stmt = $this->db->prepare("SELECT id, username, display_name, profile_image FROM users WHERE id = ? LIMIT 1");
+                $stmt->execute([(int)$lookup]);
+            } else {
+                $stmt = $this->db->prepare("SELECT id, username, display_name, profile_image FROM users WHERE LOWER(username) = LOWER(?) LIMIT 1");
+                $stmt->execute([$lookup]);
+            }
+            $user = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+        }
+
+        $basePath = $this->resolveBaseOgImagePath();
+        if (!$basePath || !extension_loaded('gd')) {
+            if (!headers_sent()) {
+                http_response_code(404);
+                echo json_encode(["success" => false, "message" => "Base OGP image unavailable."]);
+            }
+            return;
+        }
+
+        $outW = 1200;
+        $outH = 630;
+        $canvas = $this->createResizedCoverCanvas($basePath, $outW, $outH);
+        if (!$canvas) {
+            if (!headers_sent()) {
+                http_response_code(500);
+                echo json_encode(["success" => false, "message" => "Failed to render OGP image."]);
+            }
+            return;
+        }
+
+        if ($user) {
+            $this->compositeProfileBadgeOnOgCanvas($canvas, $user);
+        }
+
+        if ($mode === 'achievements' || $badgeKey !== '') {
+            $cardData = $this->resolveAchievementOgCardData($user ? (int)$user['id'] : 0, $badgeKey, $badgeLevel);
+            $this->compositeAchievementCardOnOgCanvas($canvas, $cardData);
+        }
+
+        if (!headers_sent()) {
+            header_remove('Content-Type');
+            header('Content-Type: image/jpeg');
+            header('Cache-Control: public, max-age=3600');
+        }
+        imagejpeg($canvas, null, 88);
+    }
+
+    /**
+     * Locates og-vault-preview.jpeg across API and frontend public folders.
+     */
+    private function resolveBaseOgImagePath(): ?string {
+        $candidates = [
+            __DIR__ . '/../../public/og-vault-preview.jpeg',
+            dirname(__DIR__, 3) . '/project-green/public/og-vault-preview.jpeg',
+        ];
+        if (!empty($_SERVER['DOCUMENT_ROOT'])) {
+            $candidates[] = rtrim($_SERVER['DOCUMENT_ROOT'], '/\\') . '/og-vault-preview.jpeg';
+        }
+        foreach ($candidates as $path) {
+            if (is_string($path) && is_file($path) && is_readable($path)) {
+                return $path;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Loads the base OGP JPEG and center-crops/scales it to exact dimensions.
+     */
+    private function createResizedCoverCanvas(string $path, int $targetW, int $targetH) {
+        $bytes = @file_get_contents($path);
+        if ($bytes === false) {
+            return null;
+        }
+        $src = @imagecreatefromstring($bytes);
+        if (!$src) {
+            return null;
+        }
+
+        $srcW = imagesx($src);
+        $srcH = imagesy($src);
+        if ($srcW <= 0 || $srcH <= 0) {
+            return null;
+        }
+
+        $scale = max($targetW / $srcW, $targetH / $srcH);
+        $cropW = (int)round($targetW / $scale);
+        $cropH = (int)round($targetH / $scale);
+        $cropX = (int)max(0, floor(($srcW - $cropW) / 2));
+        $cropY = (int)max(0, floor(($srcH - $cropH) / 2));
+
+        $canvas = imagecreatetruecolor($targetW, $targetH);
+        imagealphablending($canvas, true);
+        imagecopyresampled($canvas, $src, 0, 0, $cropX, $cropY, $targetW, $targetH, $cropW, $cropH);
+        return $canvas;
+    }
+
+    /**
+     * Draws a soft shadow, double ring, circular user avatar (or monogram), and @username pill
+     * into the upper-left showcase region so the center medallion and bowls remain uncovered.
+     */
+    private function compositeProfileBadgeOnOgCanvas($canvas, array $user): void {
+        $cx = 185;
+        $cy = 180;
+        $avatarDiameter = 216;
+        $avatarRadius = (int)($avatarDiameter / 2); // 108
+        $whiteRingRadius = $avatarRadius + 5;       // 113
+        $greenRingRadius = $whiteRingRadius + 5;    // 118
+
+        // Soft drop shadow layers
+        for ($i = 5; $i >= 1; $i--) {
+            $alpha = 127 - (int)round((6 - $i) * 8);
+            $shadowColor = imagecolorallocatealpha($canvas, 8, 22, 16, max(75, min(124, $alpha)));
+            $r = $greenRingRadius + ($i * 3);
+            imagefilledellipse($canvas, $cx + 4, $cy + 8, $r * 2, $r * 2, $shadowColor);
+        }
+
+        // Outer sprout-green ring and inner crisp white ring
+        $greenRingColor = imagecolorallocate($canvas, 134, 239, 172); // #86efac
+        imagefilledellipse($canvas, $cx, $cy, $greenRingRadius * 2, $greenRingRadius * 2, $greenRingColor);
+
+        $whiteColor = imagecolorallocate($canvas, 255, 255, 255);
+        imagefilledellipse($canvas, $cx, $cy, $whiteRingRadius * 2, $whiteRingRadius * 2, $whiteColor);
+
+        // Load user's profile image or build a clean initial monogram badge
+        $avatarImg = $this->loadAvatarGdImage($user['profile_image'] ?? null);
+        if (!$avatarImg) {
+            $labelSource = trim((string)($user['display_name'] ?: $user['username'] ?: 'V'));
+            $initial = strtoupper(substr($labelSource, 0, 1));
+            $avatarImg = $this->createInitialAvatarImage($initial !== '' ? $initial : 'V', 432);
+        }
+
+        if ($avatarImg) {
+            $circular = $this->createCircularMaskedAvatar($avatarImg, $avatarDiameter);
+            if ($circular) {
+                imagecopy(
+                    $canvas,
+                    $circular,
+                    $cx - $avatarRadius,
+                    $cy - $avatarRadius,
+                    0,
+                    0,
+                    $avatarDiameter,
+                    $avatarDiameter
+                );
+            }
+        }
+
+        // Render @username pill underneath the circular avatar
+        $username = trim((string)($user['username'] ?? ''));
+        if ($username !== '') {
+            $handleText = '@' . $username;
+            if (strlen($handleText) > 22) {
+                $handleText = substr($handleText, 0, 21) . '...';
+            }
+            $this->drawUsernamePill($canvas, $cx, $cy + $greenRingRadius + 24, $handleText);
+        }
+    }
+
+    /**
+     * Loads an avatar GD resource from local public paths, data URIs, or safe HTTP(S) URLs.
+     */
+    private function loadAvatarGdImage(?string $profileImage) {
+        $raw = trim((string)$profileImage);
+        if ($raw === '') {
+            return null;
+        }
+
+        $bytes = null;
+
+        // Data URI (base64 encoded raster image)
+        if (preg_match('#^data:image/(?:png|jpe?g|webp|gif);base64,(.+)$#is', $raw, $m)) {
+            $decoded = base64_decode($m[1], true);
+            if ($decoded !== false) {
+                $bytes = $decoded;
+            }
+        } else {
+            // Map relative paths or URLs pointing to our own public/images directory directly on disk
+            $pathPart = $raw;
+            if (preg_match('#^https?://#i', $raw)) {
+                $parsedUrl = parse_url($raw);
+                $pathPart = $parsedUrl['path'] ?? '';
+            }
+
+            if ($pathPart !== '' && str_starts_with($pathPart, '/')) {
+                $normalized = preg_replace('#^/pantry-rebuild-api/public/#', '/', $pathPart);
+                $apiPublicRoot = realpath(__DIR__ . '/../../public');
+                $frontendPublicRoot = realpath(dirname(__DIR__, 3) . '/project-green/public');
+
+                foreach ([$apiPublicRoot, $frontendPublicRoot] as $root) {
+                    if (!$root) {
+                        continue;
+                    }
+                    $candidate = realpath($root . DIRECTORY_SEPARATOR . ltrim(str_replace('/', DIRECTORY_SEPARATOR, $normalized), DIRECTORY_SEPARATOR));
+                    if ($candidate && str_starts_with($candidate, $root . DIRECTORY_SEPARATOR) && is_file($candidate)) {
+                        $fileBytes = @file_get_contents($candidate);
+                        if ($fileBytes !== false) {
+                            $bytes = $fileBytes;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Fallback: fetch external HTTPS avatar URL via cURL (non-private hosts only)
+            if ($bytes === null && preg_match('#^https?://#i', $raw) && function_exists('curl_init')) {
+                $host = parse_url($raw, PHP_URL_HOST);
+                $resolvedIp = $host ? @gethostbyname($host) : '';
+                if ($resolvedIp && filter_var($resolvedIp, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                    $ch = curl_init($raw);
+                    curl_setopt_array($ch, [
+                        CURLOPT_RETURNTRANSFER => true,
+                        CURLOPT_FOLLOWLOCATION => true,
+                        CURLOPT_MAXREDIRS => 2,
+                        CURLOPT_TIMEOUT => 5,
+                        CURLOPT_SSL_VERIFYPEER => true,
+                    ]);
+                    $fetched = curl_exec($ch);
+                    $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                    curl_close($ch);
+                    if (is_string($fetched) && $fetched !== '' && $status >= 200 && $status < 300 && strlen($fetched) <= 10 * 1024 * 1024) {
+                        $bytes = $fetched;
+                    }
+                }
+            }
+        }
+
+        if ($bytes === null || $bytes === '') {
+            return null;
+        }
+
+        $img = @imagecreatefromstring($bytes);
+        if (!$img) {
+            return null;
+        }
+
+        // Normalize EXIF orientation when available (e.g. mobile camera uploads)
+        if (function_exists('exif_read_data') && str_starts_with($bytes, "\xFF\xD8")) {
+            $tmp = @fopen('php://memory', 'r+');
+            if ($tmp) {
+                fwrite($tmp, $bytes);
+                rewind($tmp);
+                $exif = @exif_read_data($tmp);
+                fclose($tmp);
+                $orientation = (int)($exif['Orientation'] ?? 1);
+                if ($orientation === 3) {
+                    $img = imagerotate($img, 180, 0) ?: $img;
+                } elseif ($orientation === 6) {
+                    $img = imagerotate($img, -90, 0) ?: $img;
+                } elseif ($orientation === 8) {
+                    $img = imagerotate($img, 90, 0) ?: $img;
+                }
+            }
+        }
+
+        return $img;
+    }
+
+    /**
+     * Generates a forest-emerald monogram avatar when the user has not uploaded a photo.
+     */
+    private function createInitialAvatarImage(string $initial, int $size) {
+        $img = imagecreatetruecolor($size, $size);
+        $topR = 22; $topG = 101; $topB = 52;   // #166534
+        $botR = 13; $botG = 59;  $botB = 40;   // #0d3b28
+
+        for ($y = 0; $y < $size; $y++) {
+            $t = $y / max(1, $size - 1);
+            $r = (int)round($topR + ($botR - $topR) * $t);
+            $g = (int)round($topG + ($botG - $topG) * $t);
+            $b = (int)round($topB + ($botB - $topB) * $t);
+            $lineColor = imagecolorallocate($img, $r, $g, $b);
+            imageline($img, 0, $y, $size, $y, $lineColor);
+        }
+
+        $textColor = imagecolorallocate($img, 240, 253, 244); // #f0fdf4
+        $fontPath = $this->resolveBoldFontPath();
+        if ($fontPath) {
+            $fontSize = (int)round($size * 0.42);
+            $bbox = imagettfbbox($fontSize, 0, $fontPath, $initial);
+            if ($bbox !== false) {
+                $textW = $bbox[2] - $bbox[0];
+                $textH = $bbox[1] - $bbox[7];
+                $x = (int)round(($size - $textW) / 2 - $bbox[0]);
+                $y = (int)round(($size - $textH) / 2 - $bbox[7]);
+                imagettftext($img, $fontSize, 0, $x, $y, $textColor, $fontPath, $initial);
+                return $img;
+            }
+        }
+
+        $font = 5;
+        $charW = imagefontwidth($font);
+        $charH = imagefontheight($font);
+        imagestring($img, $font, (int)round(($size - $charW) / 2), (int)round(($size - $charH) / 2), $initial, $textColor);
+        return $img;
+    }
+
+    /**
+     * Center-crops an image to a circle with smooth 2x supersampled edge antialiasing.
+     */
+    private function createCircularMaskedAvatar($srcImg, int $diameter) {
+        $srcW = imagesx($srcImg);
+        $srcH = imagesy($srcImg);
+        if ($srcW <= 0 || $srcH <= 0) {
+            return null;
+        }
+
+        $workSize = $diameter * 2;
+        $square = imagecreatetruecolor($workSize, $workSize);
+        imagealphablending($square, false);
+        imagesavealpha($square, true);
+
+        // White opaque base before copying transparent PNG/WebP avatars cleanly
+        $bg = imagecolorallocatealpha($square, 255, 255, 255, 0);
+        imagefilledrectangle($square, 0, 0, $workSize, $workSize, $bg);
+        imagealphablending($square, true);
+
+        $cropSide = min($srcW, $srcH);
+        $cropX = (int)floor(($srcW - $cropSide) / 2);
+        $cropY = (int)floor(($srcH - $cropSide) / 2);
+        imagecopyresampled($square, $srcImg, 0, 0, $cropX, $cropY, $workSize, $workSize, $cropSide, $cropSide);
+
+        // Apply circular alpha mask with subtle 2px radial antialiasing
+        imagealphablending($square, false);
+        $center = ($workSize - 1) / 2.0;
+        $outerR = $workSize / 2.0;
+        $innerR = $outerR - 2.0;
+        $outerR2 = $outerR * $outerR;
+
+        for ($y = 0; $y < $workSize; $y++) {
+            $dy = $y - $center;
+            $dy2 = $dy * $dy;
+            for ($x = 0; $x < $workSize; $x++) {
+                $dx = $x - $center;
+                $dist2 = ($dx * $dx) + $dy2;
+                if ($dist2 >= $outerR2) {
+                    $rgba = imagecolorat($square, $x, $y);
+                    $rgb = $rgba & 0x00FFFFFF;
+                    imagesetpixel($square, $x, $y, (127 << 24) | $rgb);
+                } elseif ($dist2 > ($innerR * $innerR)) {
+                    $dist = sqrt($dist2);
+                    $frac = min(1.0, max(0.0, ($dist - $innerR) / ($outerR - $innerR)));
+                    $alpha = (int)round($frac * 127);
+                    $rgba = imagecolorat($square, $x, $y);
+                    $rgb = $rgba & 0x00FFFFFF;
+                    imagesetpixel($square, $x, $y, ($alpha << 24) | $rgb);
+                }
+            }
+        }
+
+        $out = imagecreatetruecolor($diameter, $diameter);
+        imagealphablending($out, false);
+        imagesavealpha($out, true);
+        $clear = imagecolorallocatealpha($out, 0, 0, 0, 127);
+        imagefilledrectangle($out, 0, 0, $diameter, $diameter, $clear);
+        imagecopyresampled($out, $square, 0, 0, 0, 0, $diameter, $diameter, $workSize, $workSize);
+        return $out;
+    }
+
+    /**
+     * Draws a dark emerald capsule pill containing @username beneath the avatar.
+     */
+    private function drawUsernamePill($canvas, int $centerX, int $centerY, string $text): void {
+        $fontPath = $this->resolveBoldFontPath();
+        $padX = 20;
+        $padY = 10;
+
+        if ($fontPath) {
+            $fontSize = 18;
+            $bbox = imagettfbbox($fontSize, 0, $fontPath, $text);
+            $textW = $bbox !== false ? ($bbox[2] - $bbox[0]) : strlen($text) * 11;
+            $textH = $bbox !== false ? ($bbox[1] - $bbox[7]) : 20;
+        } else {
+            $font = 5;
+            $textW = imagefontwidth($font) * strlen($text);
+            $textH = imagefontheight($font);
+        }
+
+        $pillW = max(140, (int)$textW + ($padX * 2));
+        $pillH = max(38, (int)$textH + ($padY * 2));
+        $halfW = (int)round($pillW / 2);
+        $halfH = (int)round($pillH / 2);
+        $radius = $halfH;
+        $left = $centerX - $halfW;
+        $right = $centerX + $halfW;
+        $top = $centerY - $halfH;
+        $bottom = $centerY + $halfH;
+
+        // Subtle pill shadow
+        $shadow = imagecolorallocatealpha($canvas, 0, 0, 0, 75);
+        $this->drawFilledCapsule($canvas, $left + 2, $top + 4, $right + 2, $bottom + 4, $radius, $shadow);
+
+        // Outer border (#86efac) + inner dark forest fill
+        $borderColor = imagecolorallocate($canvas, 134, 239, 172);
+        $this->drawFilledCapsule($canvas, $left - 2, $top - 2, $right + 2, $bottom + 2, $radius + 2, $borderColor);
+
+        $bgColor = imagecolorallocatealpha($canvas, 17, 56, 40, 12);
+        $this->drawFilledCapsule($canvas, $left, $top, $right, $bottom, $radius, $bgColor);
+
+        $textColor = imagecolorallocate($canvas, 255, 255, 255);
+        if ($fontPath && isset($bbox) && $bbox !== false) {
+            $tx = (int)round($centerX - ($textW / 2) - $bbox[0]);
+            $ty = (int)round($centerY - ($textH / 2) - $bbox[7]);
+            imagettftext($canvas, $fontSize, 0, $tx, $ty, $textColor, $fontPath, $text);
+        } else {
+            $tx = (int)round($centerX - ($textW / 2));
+            $ty = (int)round($centerY - ($textH / 2));
+            imagestring($canvas, 5, $tx, $ty, $text, $textColor);
+        }
+    }
+
+    /**
+     * Draws a stadium/capsule shape cleanly via a non-overlapping RGBA layer.
+     */
+    private function drawFilledCapsule($canvas, int $left, int $top, int $right, int $bottom, int $radius, int $color): void {
+        $w = max(1, ($right - $left) + 1);
+        $h = max(1, ($bottom - $top) + 1);
+        $r = max(1, min($radius, (int)floor(min($w, $h) / 2)));
+        $d = $r * 2;
+
+        $rgba = imagecolorsforindex($canvas, $color);
+        $tmp = imagecreatetruecolor($w, $h);
+        imagealphablending($tmp, false);
+        imagesavealpha($tmp, true);
+        $clear = imagecolorallocatealpha($tmp, 0, 0, 0, 127);
+        imagefilledrectangle($tmp, 0, 0, $w - 1, $h - 1, $clear);
+
+        $localCol = imagecolorallocatealpha($tmp, $rgba['red'], $rgba['green'], $rgba['blue'], $rgba['alpha']);
+        imagefilledellipse($tmp, $r, $r, $d, $d, $localCol);
+        imagefilledellipse($tmp, $w - 1 - $r, $r, $d, $d, $localCol);
+        if (($w - 1) - $d > 0) {
+            imagefilledrectangle($tmp, $r, 0, $w - 1 - $r, $h - 1, $localCol);
+        }
+
+        imagecopy($canvas, $tmp, $left, $top, 0, 0, $w, $h);
+    }
+
+    /**
+     * Resolves display metadata for an achievement OGP showcase card.
+     */
+    private function resolveAchievementOgCardData(int $userId, string $badgeKey, int $badgeLevel): array {
+        $catalog = AchievementController::getCatalog();
+        $earnedBadges = [];
+        if ($userId > 0) {
+            try {
+                $fetched = AchievementController::syncAndFetch($this->db, $userId);
+                $earnedBadges = is_array($fetched['earned'] ?? null) ? $fetched['earned'] : [];
+            } catch (\Throwable $e) {
+                $earnedBadges = [];
+            }
+        }
+
+        if ($badgeKey !== '' && $badgeLevel > 0 && isset($catalog[$badgeKey]['levels'][$badgeLevel])) {
+            $track = $catalog[$badgeKey];
+            $levelInfo = $track['levels'][$badgeLevel];
+            return [
+                'isSpotlight' => true,
+                'level' => $badgeLevel,
+                'pill' => "LEVEL {$badgeLevel} ACHIEVEMENT",
+                'title' => $levelInfo['name'],
+                'subtitle' => $track['title'],
+                'description' => $levelInfo['desc'],
+            ];
+        }
+
+        $earnedCount = count($earnedBadges);
+        $latestName = $earnedCount > 0 ? trim((string)($earnedBadges[0]['level_name'] ?? '')) : '';
+        return [
+            'isSpotlight' => false,
+            'level' => 0,
+            'pill' => 'CHEF ACHIEVEMENTS',
+            'title' => $earnedCount > 0
+                ? ($earnedCount . ' ' . ($earnedCount === 1 ? 'Badge Earned' : 'Badges Earned'))
+                : 'Achievement Showcase',
+            'subtitle' => $latestName !== '' ? "Latest: {$latestName}" : 'The Veggie Vault Milestones',
+            'description' => 'Start earning achievements at The Veggie Vault!',
+        ];
+    }
+
+    /**
+     * Composites a compact dark-forest & gold/tier achievement showcase card in the
+     * upper-right region (x: 785..1155, y: 48..258) clear of the center logo and produce bowls.
+     */
+    private function compositeAchievementCardOnOgCanvas($canvas, array $cardData): void {
+        $left = 785;
+        $top = 48;
+        $right = 1155;
+        $bottom = 258;
+        $radius = 22;
+        $level = (int)($cardData['level'] ?? 0);
+
+        // Tier-coordinated accent RGB
+        $accentRgb = match ($level) {
+            1 => [252, 211, 77],   // gold-amber
+            2 => [186, 230, 253],  // silver-sky
+            3 => [253, 186, 116],  // warm bronze
+            4 => [253, 224, 71],   // radiant gold
+            default => [134, 239, 172], // sprout emerald (#86efac)
+        };
+
+        // Layered soft drop shadow
+        for ($i = 4; $i >= 1; $i--) {
+            $alpha = 122 - ((5 - $i) * 8);
+            $shadowCol = imagecolorallocatealpha($canvas, 5, 18, 12, max(82, min(124, $alpha)));
+            $pad = $i * 2;
+            $this->drawFilledRoundedRect(
+                $canvas,
+                $left + 4 - $pad,
+                $top + 8 - $pad,
+                $right + 4 + $pad,
+                $bottom + 8 + $pad,
+                $radius + $pad,
+                $shadowCol
+            );
+        }
+
+        // Deep forest translucent body + clean 2px accent border ring (no double-blending)
+        $cardBg = imagecolorallocatealpha($canvas, 13, 46, 32, 16);
+        $this->drawFilledRoundedRect($canvas, $left, $top, $right, $bottom, $radius, $cardBg);
+
+        $borderCol = imagecolorallocate($canvas, $accentRgb[0], $accentRgb[1], $accentRgb[2]);
+        $this->drawStrokedRoundedRectBorder($canvas, $left - 2, $top - 2, $right + 2, $bottom + 2, $radius + 2, 2, $borderCol);
+
+        // Upper header medallion + tier pill
+        $trophyCx = $left + 44;
+        $trophyCy = $top + 44;
+        $this->drawTrophyMedallion($canvas, $trophyCx, $trophyCy, 24, $accentRgb);
+
+        $boldFont = $this->resolveBoldFontPath();
+        $regFont = $this->resolveRegularFontPath() ?: $boldFont;
+
+        $pillText = strtoupper((string)($cardData['pill'] ?? 'ACHIEVEMENT'));
+        $pillLeft = $trophyCx + 34;
+        $pillTop = $trophyCy - 15;
+        $pillBottom = $trophyCy + 15;
+        $pillRight = min($right - 20, $pillLeft + 245);
+        $pillFill = imagecolorallocatealpha($canvas, $accentRgb[0], $accentRgb[1], $accentRgb[2], 102);
+        $this->drawFilledCapsule($canvas, $pillLeft, $pillTop, $pillRight, $pillBottom, 15, $pillFill);
+
+        $pillTextCol = imagecolorallocate($canvas, $accentRgb[0], $accentRgb[1], $accentRgb[2]);
+        if ($boldFont) {
+            $pillSize = 10;
+            $bbox = imagettfbbox($pillSize, 0, $boldFont, $pillText);
+            $pw = $bbox ? ($bbox[2] - $bbox[0]) : 160;
+            $ph = $bbox ? ($bbox[1] - $bbox[7]) : 12;
+            $pillCenterX = (int)round(($pillLeft + $pillRight) / 2);
+            $tx = (int)round($pillCenterX - ($pw / 2) - ($bbox[0] ?? 0));
+            $ty = (int)round($trophyCy - ($ph / 2) - ($bbox[7] ?? 0));
+            imagettftext($canvas, $pillSize, 0, $tx, $ty, $pillTextCol, $boldFont, $pillText);
+        } else {
+            imagestring($canvas, 3, $pillLeft + 12, $trophyCy - 7, $pillText, $pillTextCol);
+        }
+
+        $textLeft = $left + 22;
+        $maxTextW = ($right - 22) - $textLeft;
+        $white = imagecolorallocate($canvas, 255, 255, 255);
+        $mutedGreen = imagecolorallocate($canvas, 209, 250, 229);
+        $accentCol = imagecolorallocate($canvas, $accentRgb[0], $accentRgb[1], $accentRgb[2]);
+
+        $title = trim((string)($cardData['title'] ?? 'Vault Achievement'));
+        $subtitle = trim((string)($cardData['subtitle'] ?? 'The Veggie Vault'));
+        $desc = trim((string)($cardData['description'] ?? 'Start earning achievements at The Veggie Vault!'));
+
+        if ($boldFont) {
+            $titleSize = $this->measureFittedTtfFontSize($boldFont, $title, $maxTextW, 21, 14);
+            imagettftext($canvas, $titleSize, 0, $textLeft, $top + 106, $white, $boldFont, $title);
+
+            $subSize = $this->measureFittedTtfFontSize($boldFont, $subtitle, $maxTextW, 13, 10);
+            imagettftext($canvas, $subSize, 0, $textLeft, $top + 134, $accentCol, $boldFont, $subtitle);
+
+            $descSize = 12;
+            $lines = $this->wrapTtfTextLines($regFont ?: $boldFont, $descSize, $desc, $maxTextW, 2);
+            $lineY = $top + 164;
+            foreach ($lines as $line) {
+                imagettftext($canvas, $descSize, 0, $textLeft, $lineY, $mutedGreen, $regFont ?: $boldFont, $line);
+                $lineY += 20;
+            }
+        } else {
+            imagestring($canvas, 5, $textLeft, $top + 88, substr($title, 0, 32), $white);
+            imagestring($canvas, 4, $textLeft, $top + 118, substr($subtitle, 0, 36), $accentCol);
+            imagestring($canvas, 3, $textLeft, $top + 148, substr($desc, 0, 44), $mutedGreen);
+        }
+    }
+
+    /**
+     * Draws a crisp circular trophy medallion badge on the achievement card.
+     */
+    private function drawTrophyMedallion($canvas, int $cx, int $cy, int $radius, array $accentRgb): void {
+        $ringCol = imagecolorallocate($canvas, $accentRgb[0], $accentRgb[1], $accentRgb[2]);
+        $innerBg = imagecolorallocate($canvas, 22, 101, 52);
+        $gold = imagecolorallocate($canvas, 250, 204, 21);
+
+        imagefilledellipse($canvas, $cx, $cy, $radius * 2, $radius * 2, $ringCol);
+        imagefilledellipse($canvas, $cx, $cy, ($radius - 3) * 2, ($radius - 3) * 2, $innerBg);
+
+        // Simple trophy silhouette centered inside medallion
+        imagefilledrectangle($canvas, $cx - 8, $cy - 9, $cx + 8, $cy - 1, $gold);
+        imagefilledellipse($canvas, $cx, $cy - 1, 16, 10, $gold);
+        imagefilledrectangle($canvas, $cx - 2, $cy + 3, $cx + 2, $cy + 8, $gold);
+        imagefilledrectangle($canvas, $cx - 7, $cy + 8, $cx + 7, $cy + 11, $gold);
+    }
+
+    /**
+     * Draws a filled rounded rectangle via an offscreen RGBA layer so corners never self-blend.
+     */
+    private function drawFilledRoundedRect($canvas, int $left, int $top, int $right, int $bottom, int $radius, int $color): void {
+        $this->renderRoundedRectToCanvas($canvas, $left, $top, $right, $bottom, $radius, $color, 0);
+    }
+
+    /**
+     * Draws a crisp rounded-rectangle border ring without filling its interior.
+     */
+    private function drawStrokedRoundedRectBorder($canvas, int $left, int $top, int $right, int $bottom, int $radius, int $stroke, int $color): void {
+        $this->renderRoundedRectToCanvas($canvas, $left, $top, $right, $bottom, $radius, $color, max(1, $stroke));
+    }
+
+    /**
+     * Renders a filled or stroked rounded rectangle onto an isolated RGBA layer and copies it once.
+     */
+    private function renderRoundedRectToCanvas($canvas, int $left, int $top, int $right, int $bottom, int $radius, int $color, int $stroke): void {
+        $w = max(1, ($right - $left) + 1);
+        $h = max(1, ($bottom - $top) + 1);
+        $r = max(1, min($radius, (int)floor(min($w, $h) / 2)));
+
+        $rgba = imagecolorsforindex($canvas, $color);
+        $tmp = imagecreatetruecolor($w, $h);
+        imagealphablending($tmp, false);
+        imagesavealpha($tmp, true);
+        $clear = imagecolorallocatealpha($tmp, 0, 0, 0, 127);
+        imagefilledrectangle($tmp, 0, 0, $w - 1, $h - 1, $clear);
+
+        $localCol = imagecolorallocatealpha($tmp, $rgba['red'], $rgba['green'], $rgba['blue'], $rgba['alpha']);
+        $this->paintRoundedRectOnLayer($tmp, 0, 0, $w - 1, $h - 1, $r, $localCol);
+
+        if ($stroke > 0) {
+            $ix2 = ($w - 1) - $stroke;
+            $iy2 = ($h - 1) - $stroke;
+            if ($ix2 > $stroke && $iy2 > $stroke) {
+                $this->paintRoundedRectOnLayer($tmp, $stroke, $stroke, $ix2, $iy2, max(1, $r - $stroke), $clear);
+            }
+        }
+
+        imagecopy($canvas, $tmp, $left, $top, 0, 0, $w, $h);
+    }
+
+    /**
+     * Paints a solid rounded rectangle within bounds on an alpha-disabled GD layer.
+     */
+    private function paintRoundedRectOnLayer($layer, int $x1, int $y1, int $x2, int $y2, int $radius, int $color): void {
+        $d = $radius * 2;
+        imagefilledellipse($layer, $x1 + $radius, $y1 + $radius, $d, $d, $color);
+        imagefilledellipse($layer, $x2 - $radius, $y1 + $radius, $d, $d, $color);
+        imagefilledellipse($layer, $x1 + $radius, $y2 - $radius, $d, $d, $color);
+        imagefilledellipse($layer, $x2 - $radius, $y2 - $radius, $d, $d, $color);
+        imagefilledrectangle($layer, $x1 + $radius, $y1, $x2 - $radius, $y2, $color);
+        imagefilledrectangle($layer, $x1, $y1 + $radius, $x2, $y2 - $radius, $color);
+    }
+
+    /**
+     * Scales down a TrueType font size until the string fits inside maxWidth.
+     */
+    private function measureFittedTtfFontSize(string $fontPath, string $text, int $maxWidth, int $maxSize, int $minSize): int {
+        for ($size = $maxSize; $size >= $minSize; $size--) {
+            $bbox = imagettfbbox($size, 0, $fontPath, $text);
+            if ($bbox !== false && ($bbox[2] - $bbox[0]) <= $maxWidth) {
+                return $size;
+            }
+        }
+        return $minSize;
+    }
+
+    /**
+     * Word-wraps text into at most maxLines lines that each fit within maxWidth pixels.
+     */
+    private function wrapTtfTextLines(string $fontPath, int $fontSize, string $text, int $maxWidth, int $maxLines): array {
+        $words = preg_split('/\s+/', trim($text)) ?: [];
+        $lines = [];
+        $current = '';
+
+        foreach ($words as $word) {
+            $candidate = $current === '' ? $word : ($current . ' ' . $word);
+            $bbox = imagettfbbox($fontSize, 0, $fontPath, $candidate);
+            $w = $bbox !== false ? ($bbox[2] - $bbox[0]) : strlen($candidate) * 8;
+            if ($w <= $maxWidth || $current === '') {
+                $current = $candidate;
+            } else {
+                $lines[] = $current;
+                if (count($lines) >= $maxLines) {
+                    $lastIdx = $maxLines - 1;
+                    $lines[$lastIdx] = rtrim($lines[$lastIdx], " .,!?") . '...';
+                    return $lines;
+                }
+                $current = $word;
+            }
+        }
+        if ($current !== '') {
+            $lines[] = $current;
+        }
+        return array_slice($lines, 0, $maxLines);
+    }
+
+    /**
+     * Finds a readable bold TrueType font across Linux and Windows hosts.
+     */
+    private function resolveBoldFontPath(): ?string {
+        $candidates = [
+            'C:/Windows/Fonts/segoeuib.ttf',
+            'C:/Windows/Fonts/arialbd.ttf',
+            'C:/Windows/Fonts/calibrib.ttf',
+            '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+            '/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf',
+            '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+            '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
+        ];
+        foreach ($candidates as $fontPath) {
+            if (is_file($fontPath) && is_readable($fontPath)) {
+                return $fontPath;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Finds a readable regular-weight TrueType font across Linux and Windows hosts.
+     */
+    private function resolveRegularFontPath(): ?string {
+        $candidates = [
+            'C:/Windows/Fonts/segoeui.ttf',
+            'C:/Windows/Fonts/arial.ttf',
+            'C:/Windows/Fonts/calibri.ttf',
+            '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+            '/usr/share/fonts/dejavu/DejaVuSans.ttf',
+            '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+            '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
+        ];
+        foreach ($candidates as $fontPath) {
+            if (is_file($fontPath) && is_readable($fontPath)) {
+                return $fontPath;
+            }
+        }
+        return null;
+    }
 }

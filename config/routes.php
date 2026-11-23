@@ -55,6 +55,7 @@ $router->add('POST', '/recipes/publish-draft', 'RecipeController', 'publishDraft
 
 // USER PROFILES & FOLLOWING
 $router->add('GET', '/users/profile', 'ProfileController', 'getProfile');
+$router->add('GET', '/users/profile-og-image', 'ProfileController', 'getProfileOgImage');
 $router->add('PUT', '/users/profile', 'ProfileController', 'updateProfile');
 $router->add('PUT', '/users/wellness', 'ProfileController', 'updateWellness');
 $router->add('PUT', '/users/email', 'ProfileController', 'updateEmail');
