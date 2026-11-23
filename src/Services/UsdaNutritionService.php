@@ -1420,4 +1420,617 @@ class UsdaNutritionService {
             'micros' => $micros,
         ];
     }
+
+    /**
+     * Built-in curated catalog of popular WFPB condiments, sauces, dressings, and quick sides
+     * with USDA FoodData Central per-100g nutrition profiles for instant zero-latency search.
+     */
+    private function getCuratedCondimentCatalog(): array {
+        return [
+            [
+                'fdc_id' => 168556,
+                'description' => 'Tomato Ketchup (Catsup)',
+                'category' => 'condiment',
+                'data_type' => 'SR Legacy',
+                'defaultUnit' => 'tbsp',
+                'defaultAmount' => 1.0,
+                'servingGrams' => 17.0,
+                'servingLabel' => '1 tbsp (17g)',
+                'per100g' => [
+                    'calories' => 101, 'protein_g' => 1.04, 'carbs_g' => 27.4, 'fat_g' => 0.1, 'fiber_g' => 0.3,
+                    'micros' => ['Dietary Fiber' => 0.3, 'Sodium' => 907, 'Saturated Fat' => 0.02, 'Potassium' => 281, 'Iron' => 0.36, 'Calcium' => 15, 'Magnesium' => 13, 'Zinc' => 0.17, 'Vitamin C' => 4.1, 'Vitamin A' => 26, 'Folate' => 9, 'Vitamin K' => 3.3, 'Vitamin B6' => 0.11, 'Vitamin E' => 1.46],
+                ],
+            ],
+            [
+                'fdc_id' => 172238,
+                'description' => 'Yellow Mustard, Prepared',
+                'category' => 'condiment',
+                'data_type' => 'SR Legacy',
+                'defaultUnit' => 'tsp',
+                'defaultAmount' => 1.0,
+                'servingGrams' => 5.0,
+                'servingLabel' => '1 tsp (5g)',
+                'per100g' => [
+                    'calories' => 60, 'protein_g' => 3.74, 'carbs_g' => 5.83, 'fat_g' => 3.34, 'fiber_g' => 4.0,
+                    'micros' => ['Dietary Fiber' => 4.0, 'Sodium' => 1100, 'Saturated Fat' => 0.18, 'Potassium' => 138, 'Iron' => 1.61, 'Calcium' => 63, 'Magnesium' => 49, 'Zinc' => 0.64, 'Vitamin C' => 1.5, 'Vitamin A' => 4, 'Folate' => 7, 'Vitamin K' => 1.4, 'Vitamin B6' => 0.07, 'Vitamin E' => 0.39],
+                ],
+            ],
+            [
+                'fdc_id' => 2710551,
+                'description' => 'Dijon Mustard',
+                'category' => 'condiment',
+                'data_type' => 'Foundation',
+                'defaultUnit' => 'tsp',
+                'defaultAmount' => 1.0,
+                'servingGrams' => 5.0,
+                'servingLabel' => '1 tsp (5g)',
+                'per100g' => [
+                    'calories' => 120, 'protein_g' => 4.5, 'carbs_g' => 8.0, 'fat_g' => 6.0, 'fiber_g' => 3.0,
+                    'micros' => ['Dietary Fiber' => 3.0, 'Sodium' => 1800, 'Saturated Fat' => 0.4, 'Potassium' => 150, 'Iron' => 1.8, 'Calcium' => 55, 'Magnesium' => 45, 'Zinc' => 0.6],
+                ],
+            ],
+            [
+                'fdc_id' => 171186,
+                'description' => 'Sriracha Hot Chili Sauce',
+                'category' => 'sauce',
+                'data_type' => 'Survey (FNDDS)',
+                'defaultUnit' => 'tsp',
+                'defaultAmount' => 1.0,
+                'servingGrams' => 6.0,
+                'servingLabel' => '1 tsp (6g)',
+                'per100g' => [
+                    'calories' => 93, 'protein_g' => 2.0, 'carbs_g' => 19.0, 'fat_g' => 1.0, 'fiber_g' => 2.0,
+                    'micros' => ['Dietary Fiber' => 2.0, 'Sodium' => 2050, 'Saturated Fat' => 0.1, 'Potassium' => 250, 'Iron' => 0.6, 'Calcium' => 18, 'Vitamin C' => 18.0, 'Vitamin A' => 55],
+                ],
+            ],
+            [
+                'fdc_id' => 169062,
+                'description' => 'Salsa (Red Tomato, Ready-to-Serve)',
+                'category' => 'sauce',
+                'data_type' => 'SR Legacy',
+                'defaultUnit' => 'tbsp',
+                'defaultAmount' => 2.0,
+                'servingGrams' => 32.0,
+                'servingLabel' => '2 tbsp (32g)',
+                'per100g' => [
+                    'calories' => 29, 'protein_g' => 1.5, 'carbs_g' => 6.6, 'fat_g' => 0.2, 'fiber_g' => 1.8,
+                    'micros' => ['Dietary Fiber' => 1.8, 'Sodium' => 430, 'Saturated Fat' => 0.03, 'Potassium' => 291, 'Iron' => 0.47, 'Calcium' => 25, 'Magnesium' => 15, 'Vitamin C' => 4.2, 'Vitamin A' => 25, 'Folate' => 11, 'Vitamin K' => 5.4],
+                ],
+            ],
+            [
+                'fdc_id' => 172420,
+                'description' => 'Hummus, Traditional Chickpea',
+                'category' => 'sauce',
+                'data_type' => 'SR Legacy',
+                'defaultUnit' => 'tbsp',
+                'defaultAmount' => 2.0,
+                'servingGrams' => 30.0,
+                'servingLabel' => '2 tbsp (30g)',
+                'per100g' => [
+                    'calories' => 166, 'protein_g' => 7.9, 'carbs_g' => 14.3, 'fat_g' => 9.6, 'fiber_g' => 6.0,
+                    'micros' => ['Dietary Fiber' => 6.0, 'Sodium' => 379, 'Saturated Fat' => 1.44, 'Potassium' => 228, 'Iron' => 2.44, 'Calcium' => 38, 'Magnesium' => 71, 'Zinc' => 1.83, 'Folate' => 83, 'Vitamin B6' => 0.2],
+                ],
+            ],
+            [
+                'fdc_id' => 170567,
+                'description' => 'Guacamole, Classic Avocado Dip',
+                'category' => 'side',
+                'data_type' => 'Survey (FNDDS)',
+                'defaultUnit' => 'tbsp',
+                'defaultAmount' => 2.0,
+                'servingGrams' => 30.0,
+                'servingLabel' => '2 tbsp (30g)',
+                'per100g' => [
+                    'calories' => 157, 'protein_g' => 1.9, 'carbs_g' => 8.5, 'fat_g' => 14.1, 'fiber_g' => 6.6,
+                    'micros' => ['Dietary Fiber' => 6.6, 'Sodium' => 315, 'Saturated Fat' => 2.04, 'Potassium' => 473, 'Iron' => 0.56, 'Calcium' => 14, 'Magnesium' => 28, 'Zinc' => 0.62, 'Vitamin C' => 11.4, 'Vitamin A' => 11, 'Folate' => 79, 'Vitamin K' => 20.4, 'Vitamin E' => 1.98, 'Vitamin B6' => 0.25],
+                ],
+            ],
+            [
+                'fdc_id' => 170189,
+                'description' => 'Tahini (Roasted Sesame Seed Paste)',
+                'category' => 'sauce',
+                'data_type' => 'SR Legacy',
+                'defaultUnit' => 'tbsp',
+                'defaultAmount' => 1.0,
+                'servingGrams' => 15.0,
+                'servingLabel' => '1 tbsp (15g)',
+                'per100g' => [
+                    'calories' => 595, 'protein_g' => 17.0, 'carbs_g' => 21.2, 'fat_g' => 53.8, 'fiber_g' => 9.3,
+                    'micros' => ['Dietary Fiber' => 9.3, 'Sodium' => 115, 'Saturated Fat' => 7.53, 'Potassium' => 414, 'Iron' => 8.95, 'Calcium' => 426, 'Magnesium' => 95, 'Zinc' => 4.62, 'Folate' => 98, 'Vitamin B6' => 0.15, 'Vitamin E' => 0.25],
+                ],
+            ],
+            [
+                'fdc_id' => 174277,
+                'description' => 'Soy Sauce, Traditional Shoyu',
+                'category' => 'condiment',
+                'data_type' => 'SR Legacy',
+                'defaultUnit' => 'tbsp',
+                'defaultAmount' => 1.0,
+                'servingGrams' => 16.0,
+                'servingLabel' => '1 tbsp (16g)',
+                'per100g' => [
+                    'calories' => 53, 'protein_g' => 8.14, 'carbs_g' => 4.93, 'fat_g' => 0.57, 'fiber_g' => 0.8,
+                    'micros' => ['Dietary Fiber' => 0.8, 'Sodium' => 5493, 'Saturated Fat' => 0.08, 'Potassium' => 435, 'Iron' => 1.45, 'Calcium' => 33, 'Magnesium' => 74, 'Zinc' => 0.87, 'Folate' => 14, 'Vitamin B6' => 0.15],
+                ],
+            ],
+            [
+                'fdc_id' => 172447,
+                'description' => 'Tamari (Gluten-Free Soy Sauce)',
+                'category' => 'condiment',
+                'data_type' => 'SR Legacy',
+                'defaultUnit' => 'tbsp',
+                'defaultAmount' => 1.0,
+                'servingGrams' => 18.0,
+                'servingLabel' => '1 tbsp (18g)',
+                'per100g' => [
+                    'calories' => 60, 'protein_g' => 10.5, 'carbs_g' => 5.57, 'fat_g' => 0.1, 'fiber_g' => 0.8,
+                    'micros' => ['Dietary Fiber' => 0.8, 'Sodium' => 5586, 'Saturated Fat' => 0.02, 'Potassium' => 212, 'Iron' => 2.38, 'Calcium' => 20, 'Magnesium' => 40, 'Zinc' => 0.43],
+                ],
+            ],
+            [
+                'fdc_id' => 2514742,
+                'description' => 'Coconut Aminos Seasoning Sauce',
+                'category' => 'condiment',
+                'data_type' => 'Branded',
+                'defaultUnit' => 'tbsp',
+                'defaultAmount' => 1.0,
+                'servingGrams' => 15.0,
+                'servingLabel' => '1 tbsp (15g)',
+                'per100g' => [
+                    'calories' => 100, 'protein_g' => 0.0, 'carbs_g' => 20.0, 'fat_g' => 0.0, 'fiber_g' => 0.0,
+                    'micros' => ['Dietary Fiber' => 0.0, 'Sodium' => 1800, 'Saturated Fat' => 0.0, 'Potassium' => 120],
+                ],
+            ],
+            [
+                'fdc_id' => 171183,
+                'description' => 'Barbecue Sauce (BBQ)',
+                'category' => 'sauce',
+                'data_type' => 'SR Legacy',
+                'defaultUnit' => 'tbsp',
+                'defaultAmount' => 2.0,
+                'servingGrams' => 34.0,
+                'servingLabel' => '2 tbsp (34g)',
+                'per100g' => [
+                    'calories' => 172, 'protein_g' => 0.8, 'carbs_g' => 40.9, 'fat_g' => 0.56, 'fiber_g' => 0.9,
+                    'micros' => ['Dietary Fiber' => 0.9, 'Sodium' => 1027, 'Saturated Fat' => 0.09, 'Potassium' => 232, 'Iron' => 0.52, 'Calcium' => 25, 'Magnesium' => 14, 'Vitamin C' => 1.2, 'Vitamin A' => 13, 'Vitamin E' => 0.81],
+                ],
+            ],
+            [
+                'fdc_id' => 175040,
+                'description' => 'Nutritional Yeast Flakes',
+                'category' => 'condiment',
+                'data_type' => 'Branded',
+                'defaultUnit' => 'tbsp',
+                'defaultAmount' => 2.0,
+                'servingGrams' => 10.0,
+                'servingLabel' => '2 tbsp (10g)',
+                'per100g' => [
+                    'calories' => 375, 'protein_g' => 50.0, 'carbs_g' => 31.2, 'fat_g' => 3.1, 'fiber_g' => 25.0,
+                    'micros' => ['Dietary Fiber' => 25.0, 'Sodium' => 156, 'Saturated Fat' => 0.0, 'Potassium' => 2100, 'Iron' => 5.6, 'Calcium' => 0, 'Zinc' => 25.0, 'Folate' => 2400, 'Vitamin B6' => 15.0, 'Vitamin B12' => 48.0],
+                ],
+            ],
+            [
+                'fdc_id' => 169997,
+                'description' => 'Pure Maple Syrup',
+                'category' => 'condiment',
+                'data_type' => 'SR Legacy',
+                'defaultUnit' => 'tbsp',
+                'defaultAmount' => 1.0,
+                'servingGrams' => 20.0,
+                'servingLabel' => '1 tbsp (20g)',
+                'per100g' => [
+                    'calories' => 260, 'protein_g' => 0.04, 'carbs_g' => 67.0, 'fat_g' => 0.06, 'fiber_g' => 0.0,
+                    'micros' => ['Dietary Fiber' => 0.0, 'Sodium' => 12, 'Saturated Fat' => 0.01, 'Potassium' => 212, 'Iron' => 0.11, 'Calcium' => 102, 'Magnesium' => 21, 'Zinc' => 1.47],
+                ],
+            ],
+            [
+                'fdc_id' => 173717,
+                'description' => 'Balsamic Vinegar',
+                'category' => 'condiment',
+                'data_type' => 'SR Legacy',
+                'defaultUnit' => 'tbsp',
+                'defaultAmount' => 1.0,
+                'servingGrams' => 16.0,
+                'servingLabel' => '1 tbsp (16g)',
+                'per100g' => [
+                    'calories' => 88, 'protein_g' => 0.49, 'carbs_g' => 17.03, 'fat_g' => 0.0, 'fiber_g' => 0.0,
+                    'micros' => ['Dietary Fiber' => 0.0, 'Sodium' => 23, 'Saturated Fat' => 0.0, 'Potassium' => 112, 'Iron' => 0.72, 'Calcium' => 27, 'Magnesium' => 12],
+                ],
+            ],
+            [
+                'fdc_id' => 169279,
+                'description' => 'Sauerkraut, Canned Solids & Liquids',
+                'category' => 'side',
+                'data_type' => 'SR Legacy',
+                'defaultUnit' => 'cup',
+                'defaultAmount' => 0.5,
+                'servingGrams' => 71.0,
+                'servingLabel' => '1/2 cup (71g)',
+                'per100g' => [
+                    'calories' => 19, 'protein_g' => 0.91, 'carbs_g' => 4.28, 'fat_g' => 0.14, 'fiber_g' => 2.9,
+                    'micros' => ['Dietary Fiber' => 2.9, 'Sodium' => 661, 'Saturated Fat' => 0.03, 'Potassium' => 170, 'Iron' => 1.47, 'Calcium' => 30, 'Magnesium' => 13, 'Zinc' => 0.19, 'Vitamin C' => 14.7, 'Folate' => 24, 'Vitamin K' => 13.0, 'Vitamin B6' => 0.13],
+                ],
+            ],
+            [
+                'fdc_id' => 170198,
+                'description' => 'Hot Chili Pepper Sauce (Tabasco / Cayenne)',
+                'category' => 'condiment',
+                'data_type' => 'SR Legacy',
+                'defaultUnit' => 'tsp',
+                'defaultAmount' => 1.0,
+                'servingGrams' => 5.0,
+                'servingLabel' => '1 tsp (5g)',
+                'per100g' => [
+                    'calories' => 11, 'protein_g' => 0.52, 'carbs_g' => 1.81, 'fat_g' => 0.42, 'fiber_g' => 0.6,
+                    'micros' => ['Dietary Fiber' => 0.6, 'Sodium' => 2643, 'Saturated Fat' => 0.07, 'Potassium' => 144, 'Iron' => 0.36, 'Calcium' => 8, 'Magnesium' => 9, 'Vitamin C' => 74.8, 'Vitamin A' => 26, 'Vitamin K' => 6.0],
+                ],
+            ],
+            [
+                'fdc_id' => 172231,
+                'description' => 'Marinara Pasta Sauce (Fat-Free / Traditional)',
+                'category' => 'sauce',
+                'data_type' => 'SR Legacy',
+                'defaultUnit' => 'cup',
+                'defaultAmount' => 0.5,
+                'servingGrams' => 125.0,
+                'servingLabel' => '1/2 cup (125g)',
+                'per100g' => [
+                    'calories' => 45, 'protein_g' => 1.4, 'carbs_g' => 8.2, 'fat_g' => 0.6, 'fiber_g' => 1.7,
+                    'micros' => ['Dietary Fiber' => 1.7, 'Sodium' => 390, 'Saturated Fat' => 0.08, 'Potassium' => 320, 'Iron' => 0.85, 'Calcium' => 24, 'Magnesium' => 18, 'Vitamin C' => 7.5, 'Vitamin A' => 28, 'Vitamin K' => 5.2],
+                ],
+            ],
+            [
+                'fdc_id' => 171187,
+                'description' => 'Sweet Chili Dipping Sauce',
+                'category' => 'sauce',
+                'data_type' => 'Survey (FNDDS)',
+                'defaultUnit' => 'tbsp',
+                'defaultAmount' => 2.0,
+                'servingGrams' => 32.0,
+                'servingLabel' => '2 tbsp (32g)',
+                'per100g' => [
+                    'calories' => 150, 'protein_g' => 0.5, 'carbs_g' => 36.0, 'fat_g' => 0.2, 'fiber_g' => 0.5,
+                    'micros' => ['Dietary Fiber' => 0.5, 'Sodium' => 720, 'Saturated Fat' => 0.0, 'Potassium' => 65, 'Vitamin C' => 3.5],
+                ],
+            ],
+            [
+                'fdc_id' => 169385,
+                'description' => 'Dill Pickles or Dill Relish',
+                'category' => 'condiment',
+                'data_type' => 'SR Legacy',
+                'defaultUnit' => 'tbsp',
+                'defaultAmount' => 1.0,
+                'servingGrams' => 15.0,
+                'servingLabel' => '1 tbsp (15g)',
+                'per100g' => [
+                    'calories' => 12, 'protein_g' => 0.48, 'carbs_g' => 1.99, 'fat_g' => 0.43, 'fiber_g' => 1.0,
+                    'micros' => ['Dietary Fiber' => 1.0, 'Sodium' => 809, 'Saturated Fat' => 0.11, 'Potassium' => 112, 'Iron' => 0.25, 'Calcium' => 54, 'Magnesium' => 7, 'Vitamin K' => 16.8],
+                ],
+            ],
+            [
+                'fdc_id' => 171705,
+                'description' => 'Fresh Avocado Slices (Side / Topping)',
+                'category' => 'side',
+                'data_type' => 'Foundation',
+                'defaultUnit' => 'serving',
+                'defaultAmount' => 1.0,
+                'servingGrams' => 50.0,
+                'servingLabel' => '1/3 medium (50g)',
+                'per100g' => [
+                    'calories' => 160, 'protein_g' => 2.0, 'carbs_g' => 8.53, 'fat_g' => 14.66, 'fiber_g' => 6.7,
+                    'micros' => ['Dietary Fiber' => 6.7, 'Sodium' => 7, 'Saturated Fat' => 2.13, 'Potassium' => 485, 'Iron' => 0.55, 'Calcium' => 12, 'Magnesium' => 29, 'Zinc' => 0.64, 'Vitamin C' => 10.0, 'Folate' => 81, 'Vitamin K' => 21.0, 'Vitamin E' => 2.07, 'Vitamin B6' => 0.26],
+                ],
+            ],
+            [
+                'fdc_id' => 170379,
+                'description' => 'Steamed Broccoli Florets (Side)',
+                'category' => 'side',
+                'data_type' => 'SR Legacy',
+                'defaultUnit' => 'cup',
+                'defaultAmount' => 1.0,
+                'servingGrams' => 156.0,
+                'servingLabel' => '1 cup (156g)',
+                'per100g' => [
+                    'calories' => 35, 'protein_g' => 2.38, 'carbs_g' => 7.18, 'fat_g' => 0.41, 'fiber_g' => 3.3,
+                    'micros' => ['Dietary Fiber' => 3.3, 'Sodium' => 41, 'Saturated Fat' => 0.08, 'Potassium' => 293, 'Iron' => 0.67, 'Calcium' => 40, 'Magnesium' => 21, 'Zinc' => 0.45, 'Vitamin C' => 64.9, 'Vitamin A' => 77, 'Folate' => 108, 'Vitamin K' => 141.1, 'Vitamin E' => 1.45, 'Vitamin B6' => 0.2],
+                ],
+            ],
+            [
+                'fdc_id' => 169704,
+                'description' => 'Cooked Brown Rice (Side)',
+                'category' => 'side',
+                'data_type' => 'SR Legacy',
+                'defaultUnit' => 'cup',
+                'defaultAmount' => 0.5,
+                'servingGrams' => 98.0,
+                'servingLabel' => '1/2 cup (98g)',
+                'per100g' => [
+                    'calories' => 123, 'protein_g' => 2.74, 'carbs_g' => 25.58, 'fat_g' => 0.97, 'fiber_g' => 1.6,
+                    'micros' => ['Dietary Fiber' => 1.6, 'Sodium' => 4, 'Saturated Fat' => 0.26, 'Potassium' => 86, 'Iron' => 0.56, 'Calcium' => 3, 'Magnesium' => 39, 'Zinc' => 0.71, 'Folate' => 9, 'Vitamin B6' => 0.12],
+                ],
+            ],
+            [
+                'fdc_id' => 168917,
+                'description' => 'Cooked Quinoa (Side)',
+                'category' => 'side',
+                'data_type' => 'SR Legacy',
+                'defaultUnit' => 'cup',
+                'defaultAmount' => 0.5,
+                'servingGrams' => 93.0,
+                'servingLabel' => '1/2 cup (93g)',
+                'per100g' => [
+                    'calories' => 120, 'protein_g' => 4.4, 'carbs_g' => 21.3, 'fat_g' => 1.92, 'fiber_g' => 2.8,
+                    'micros' => ['Dietary Fiber' => 2.8, 'Sodium' => 7, 'Saturated Fat' => 0.23, 'Potassium' => 172, 'Iron' => 1.49, 'Calcium' => 17, 'Magnesium' => 64, 'Zinc' => 1.09, 'Folate' => 42, 'Vitamin B6' => 0.12, 'Vitamin E' => 0.63],
+                ],
+            ],
+            [
+                'fdc_id' => 173470,
+                'description' => 'Apple Cider Vinegar',
+                'category' => 'condiment',
+                'data_type' => 'SR Legacy',
+                'defaultUnit' => 'tbsp',
+                'defaultAmount' => 1.0,
+                'servingGrams' => 15.0,
+                'servingLabel' => '1 tbsp (15g)',
+                'per100g' => [
+                    'calories' => 21, 'protein_g' => 0.0, 'carbs_g' => 0.93, 'fat_g' => 0.0, 'fiber_g' => 0.0,
+                    'micros' => ['Dietary Fiber' => 0.0, 'Sodium' => 5, 'Potassium' => 73, 'Iron' => 0.2, 'Calcium' => 7, 'Magnesium' => 5],
+                ],
+            ],
+            [
+                'fdc_id' => 172185,
+                'description' => 'Teriyaki Sauce, Plant-Based',
+                'category' => 'sauce',
+                'data_type' => 'SR Legacy',
+                'defaultUnit' => 'tbsp',
+                'defaultAmount' => 1.0,
+                'servingGrams' => 18.0,
+                'servingLabel' => '1 tbsp (18g)',
+                'per100g' => [
+                    'calories' => 89, 'protein_g' => 5.93, 'carbs_g' => 15.56, 'fat_g' => 0.0, 'fiber_g' => 0.1,
+                    'micros' => ['Dietary Fiber' => 0.1, 'Sodium' => 3833, 'Potassium' => 225, 'Iron' => 1.72, 'Calcium' => 28, 'Magnesium' => 61],
+                ],
+            ],
+            [
+                'fdc_id' => 171234,
+                'description' => 'Kimchi, Vegan Fermented Napa Cabbage',
+                'category' => 'side',
+                'data_type' => 'Survey (FNDDS)',
+                'defaultUnit' => 'cup',
+                'defaultAmount' => 0.5,
+                'servingGrams' => 75.0,
+                'servingLabel' => '1/2 cup (75g)',
+                'per100g' => [
+                    'calories' => 15, 'protein_g' => 1.1, 'carbs_g' => 2.4, 'fat_g' => 0.5, 'fiber_g' => 1.6,
+                    'micros' => ['Dietary Fiber' => 1.6, 'Sodium' => 498, 'Saturated Fat' => 0.07, 'Potassium' => 151, 'Iron' => 2.5, 'Calcium' => 33, 'Magnesium' => 14, 'Vitamin C' => 18.0, 'Vitamin K' => 43.6, 'Folate' => 52],
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * Converts a per100g food profile into a standardized search item with unit micros.
+     */
+    private function formatUsdaSearchItem(array $profile, string $category = 'condiment'): array {
+        $per100g = $profile['per100g'] ?? [];
+        $unitMicros = [];
+        foreach (self::TRACKED_MICROS as $spec) {
+            $mName = $spec['name'];
+            $val = round((float)($per100g['micros'][$mName] ?? 0.0), 3);
+            $unitMicros[] = [
+                'nutrient_name' => $mName,
+                'name' => $mName,
+                'amount' => $val,
+                'unit' => $spec['unit'],
+                'dvTarget' => $spec['dv'],
+                'daily_value_percentage' => $spec['dv'] > 0 ? round(($val / $spec['dv']) * 100, 1) : 0.0,
+            ];
+        }
+
+        $grams = (float)($profile['servingGrams'] ?? 15.0);
+        if ($grams <= 0) {
+            $grams = 15.0;
+        }
+        $scale = $grams / 100.0;
+
+        return [
+            'fdc_id' => (int)($profile['fdc_id'] ?? 0),
+            'query_key' => $this->normalizeQueryKey((string)($profile['description'] ?? '')),
+            'description' => (string)($profile['description'] ?? 'USDA Food Item'),
+            'category' => $category,
+            'data_type' => (string)($profile['data_type'] ?? 'USDA'),
+            'defaultUnit' => (string)($profile['defaultUnit'] ?? 'tbsp'),
+            'defaultAmount' => (float)($profile['defaultAmount'] ?? 1.0),
+            'servingGrams' => round($grams, 2),
+            'servingLabel' => (string)($profile['servingLabel'] ?? '1 tbsp (15g)'),
+            'per100g' => [
+                'calories' => round((float)($per100g['calories'] ?? 0), 2),
+                'protein_g' => round((float)($per100g['protein_g'] ?? 0), 2),
+                'carbs_g' => round((float)($per100g['carbs_g'] ?? 0), 2),
+                'fat_g' => round((float)($per100g['fat_g'] ?? 0), 2),
+                'fiber_g' => round((float)($per100g['fiber_g'] ?? 0), 2),
+                'micros' => $per100g['micros'] ?? [],
+                'microsList' => $unitMicros,
+            ],
+            'sampleCalories' => (int)round(((float)($per100g['calories'] ?? 0)) * $scale),
+        ];
+    }
+
+    /**
+     * Searches curated condiments, local USDA cache, and live USDA FoodData Central API
+     * for condiments, sauces, dressings, and side items.
+     */
+    public function searchCondimentsAndFoods(string $query, int $limit = 12): array {
+        $trimmed = trim($query);
+        $curated = $this->getCuratedCondimentCatalog();
+
+        if ($trimmed === '') {
+            return array_map(
+                fn($c) => $this->formatUsdaSearchItem($c, $c['category'] ?? 'condiment'),
+                array_slice($curated, 0, $limit)
+            );
+        }
+
+        $qLower = mb_strtolower($trimmed);
+        $results = [];
+        $seenDescs = [];
+
+        // 1. Check curated quick-condiment catalog first
+        foreach ($curated as $item) {
+            $descLower = mb_strtolower($item['description']);
+            if (str_contains($descLower, $qLower)) {
+                $seenDescs[$descLower] = true;
+                $results[] = $this->formatUsdaSearchItem($item, $item['category'] ?? 'condiment');
+            }
+        }
+
+        // 2. Check cached USDA lookups
+        $this->ensureCacheTable();
+        $cacheStmt = $this->db->prepare("
+            SELECT query_key, fdc_id, description, data_type, nutrients_json
+            FROM usda_food_cache
+            WHERE LOWER(query_key) LIKE ? OR LOWER(description) LIKE ?
+            ORDER BY CASE WHEN LOWER(query_key) = ? THEN 0 ELSE 1 END, LENGTH(description) ASC
+            LIMIT 8
+        ");
+        $like = '%' . $qLower . '%';
+        $cacheStmt->execute([$like, $like, $qLower]);
+        foreach ($cacheStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $decoded = json_decode((string)$row['nutrients_json'], true);
+            $descLower = mb_strtolower((string)$row['description']);
+            if (is_array($decoded) && !isset($seenDescs[$descLower])) {
+                $seenDescs[$descLower] = true;
+                $results[] = $this->formatUsdaSearchItem([
+                    'fdc_id' => (int)$row['fdc_id'],
+                    'description' => $row['description'],
+                    'data_type' => $row['data_type'],
+                    'defaultUnit' => 'tbsp',
+                    'defaultAmount' => 1.0,
+                    'servingGrams' => 15.0,
+                    'servingLabel' => '1 tbsp (15g)',
+                    'per100g' => $decoded,
+                ], 'condiment');
+            }
+        }
+
+        // 3. Query live USDA FoodData Central for richer/specific matches
+        if (count($results) < $limit) {
+            $apiResp = $this->multiPostUsdaSearch(
+                ['q' => $trimmed],
+                ['Foundation', 'SR Legacy', 'Survey (FNDDS)', 'Branded'],
+                15
+            );
+            $foods = $apiResp['q']['foods'] ?? [];
+            $cacheInsert = $this->db->prepare("
+                INSERT INTO usda_food_cache (query_key, fdc_id, description, data_type, nutrients_json)
+                VALUES (?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    fdc_id = VALUES(fdc_id),
+                    description = VALUES(description),
+                    data_type = VALUES(data_type),
+                    nutrients_json = VALUES(nutrients_json)
+            ");
+
+            foreach ($foods as $food) {
+                if (count($results) >= $limit) {
+                    break;
+                }
+                $desc = trim((string)($food['description'] ?? ''));
+                if ($desc === '') {
+                    continue;
+                }
+                $descLower = mb_strtolower($desc);
+                if (isset($seenDescs[$descLower])) {
+                    continue;
+                }
+                $seenDescs[$descLower] = true;
+                $per100g = $this->extractPer100gNutrients($food);
+
+                $servingGrams = 15.0;
+                $defaultUnit = 'tbsp';
+                $defaultAmount = 1.0;
+                $servingLabel = '1 tbsp (15g)';
+                $household = trim((string)($food['householdServingFullText'] ?? ''));
+                $rawServingSize = (float)($food['servingSize'] ?? 0);
+                $rawServingUnit = strtolower(trim((string)($food['servingSizeUnit'] ?? '')));
+                if ($rawServingSize > 0 && in_array($rawServingUnit, ['g', 'ml'], true)) {
+                    $servingGrams = $rawServingSize;
+                    if ($household !== '') {
+                        $servingLabel = $household . ' (' . round($servingGrams) . 'g)';
+                    } else {
+                        $servingLabel = '1 serving (' . round($servingGrams) . 'g)';
+                    }
+                    $defaultUnit = 'serving';
+                }
+
+                $formatted = $this->formatUsdaSearchItem([
+                    'fdc_id' => (int)($food['fdcId'] ?? 0),
+                    'description' => $desc,
+                    'data_type' => (string)($food['dataType'] ?? 'USDA'),
+                    'defaultUnit' => $defaultUnit,
+                    'defaultAmount' => $defaultAmount,
+                    'servingGrams' => $servingGrams,
+                    'servingLabel' => $servingLabel,
+                    'per100g' => $per100g,
+                ], 'condiment');
+                $results[] = $formatted;
+
+                try {
+                    $qKey = $this->normalizeQueryKey($desc);
+                    if ($qKey !== '') {
+                        $cacheInsert->execute([
+                            $qKey,
+                            $formatted['fdc_id'],
+                            mb_substr($desc, 0, 255),
+                            mb_substr($formatted['data_type'], 0, 64),
+                            json_encode($per100g),
+                        ]);
+                    }
+                } catch (\Throwable $e) {
+                    // Non-fatal cache write
+                }
+            }
+        }
+
+        // 4. Fallback to Emma nutrition estimate if USDA returned 0 matches (cached for instant reuse)
+        if (empty($results) && $this->geminiApiKey !== '') {
+            $qKey = $this->normalizeQueryKey($trimmed);
+            $emmaProfiles = $this->estimateUnmatchedWithEmma([[
+                'key' => $qKey,
+                'original' => $trimmed,
+                'label' => $trimmed,
+            ]]);
+            if (!empty($emmaProfiles[$qKey]['per100g'])) {
+                $descLabel = ucwords($trimmed) . ' (Emma Nutrition Estimate)';
+                $per100 = $emmaProfiles[$qKey]['per100g'];
+                $results[] = $this->formatUsdaSearchItem([
+                    'fdc_id' => 0,
+                    'description' => $descLabel,
+                    'data_type' => 'Emma Estimate',
+                    'defaultUnit' => 'tbsp',
+                    'defaultAmount' => 1.0,
+                    'servingGrams' => 15.0,
+                    'servingLabel' => '1 tbsp (15g)',
+                    'per100g' => $per100,
+                ], 'condiment');
+                try {
+                    if ($qKey !== '') {
+                        $cacheStmtIns = $this->db->prepare("
+                            INSERT INTO usda_food_cache (query_key, fdc_id, description, data_type, nutrients_json)
+                            VALUES (?, 0, ?, 'Emma Estimate', ?)
+                            ON DUPLICATE KEY UPDATE
+                                description = VALUES(description),
+                                data_type = VALUES(data_type),
+                                nutrients_json = VALUES(nutrients_json)
+                        ");
+                        $cacheStmtIns->execute([$qKey, mb_substr($descLabel, 0, 255), json_encode($per100)]);
+                    }
+                } catch (\Throwable $e) {
+                    // Non-fatal
+                }
+            }
+        }
+
+        return array_slice($results, 0, $limit);
+    }
 }

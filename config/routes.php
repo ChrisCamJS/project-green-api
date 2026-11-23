@@ -84,6 +84,11 @@ $router->add('GET', '/meal-plans/recipes', 'MealPlanController', 'getPlannableRe
 $router->add('POST', '/meal-plans', 'MealPlanController', 'addMealPlanEntry');
 $router->add('PUT', '/meal-plans', 'MealPlanController', 'updateMealPlanEntry');
 $router->add('DELETE', '/meal-plans', 'MealPlanController', 'deleteMealPlanEntry');
+$router->add('GET', '/meal-plans/usda-search', 'MealPlanController', 'searchUsdaFoods');
+$router->add('POST', '/meal-plans/copy-range', 'MealPlanController', 'copyMealPlanRange');
+$router->add('POST', '/meal-plans/share', 'MealPlanController', 'createSharedMealPlan');
+$router->add('GET', '/meal-plans/share', 'MealPlanController', 'getSharedMealPlan');
+$router->add('POST', '/meal-plans/import-share', 'MealPlanController', 'importSharedMealPlan');
 
 // RECENT CHATS (30-DAY DATABASE STORAGE)
 $router->add('GET', '/chats', 'ChatController', 'getRecentChats');
