@@ -49,10 +49,7 @@ if ($profileIdentifier !== '') {
     if ($ogDesc === '') {
         $ogDesc = 'Explore published whole-food, oil-free, plant-based recipes by @' . $username . ' on The Veggie Vault.';
     }
-    $rawImg = trim((string)($profileRow['profile_image'] ?? ''));
-    $ogImg = $rawImg !== ''
-        ? (preg_match('/^https?:\/\//i', $rawImg) ? $rawImg : 'https://api.veggievault.chrisandemmashow.com' . (str_starts_with($rawImg, '/') ? '' : '/') . $rawImg)
-        : 'https://veggievault.chrisandemmashow.com/og-vault-preview.jpeg';
+    $ogImg = 'https://veggievault.chrisandemmashow.com/pantry-rebuild-api/public/users/profile-og-image?identifier=' . $safeSlug;
 
     $esc = static fn(string $v): string => htmlspecialchars($v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     $schema = json_encode([
@@ -343,9 +340,18 @@ if (!empty($recipe['title'])) {
     $recipeSchema = $schema;
 }
 
+$imageExt = strtolower((string)pathinfo((string)(parse_url($image, PHP_URL_PATH) ?: $image), PATHINFO_EXTENSION));
+$imageMime = match ($imageExt) {
+    'png' => 'image/png',
+    'webp' => 'image/webp',
+    'gif' => 'image/gif',
+    default => 'image/jpeg',
+};
+
 $escapedTitle = htmlspecialchars($title, ENT_QUOTES, 'UTF-8');
 $escapedDescription = htmlspecialchars($description, ENT_QUOTES, 'UTF-8');
 $escapedImage = htmlspecialchars($image, ENT_QUOTES, 'UTF-8');
+$escapedImageType = htmlspecialchars($imageMime, ENT_QUOTES, 'UTF-8');
 $escapedUrl = htmlspecialchars($url, ENT_QUOTES, 'UTF-8');
 ?>
 <!DOCTYPE html>
@@ -364,6 +370,7 @@ $escapedUrl = htmlspecialchars($url, ENT_QUOTES, 'UTF-8');
     <meta property="og:description" content="<?= $escapedDescription ?>" />
     <meta property="og:image" content="<?= $escapedImage ?>" />
     <meta property="og:image:secure_url" content="<?= $escapedImage ?>" />
+    <meta property="og:image:type" content="<?= $escapedImageType ?>" />
     <meta property="og:image:alt" content="<?= $escapedTitle ?>" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />

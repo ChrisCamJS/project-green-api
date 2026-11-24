@@ -20,13 +20,16 @@ class Router {
             $uri = '/';
         }
 
+        // Social crawlers (Facebook, Twitter, Discord) probe og:image URLs with HTTP HEAD
+        $lookupMethod = ($method === 'HEAD') ? 'GET' : $method;
+
         foreach ($this->routes as $route) {
             $registeredRoute = rtrim($route['route'], '/');
             if (empty($registeredRoute)) {
                 $registeredRoute = '/';
             }
 
-            if ($route['method'] === $method && $registeredRoute === $uri) {
+            if ($route['method'] === $lookupMethod && $registeredRoute === $uri) {
                 $controllerName = "App\\Controllers\\" . $route['controller'];
                 $controller = new $controllerName();
                 $action = $route['action'];

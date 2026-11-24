@@ -1,12 +1,21 @@
 <IfModule mod_rewrite.c>
     RewriteEngine On
     
-    # 1. Intercept bots, capture the numeric ID or story slug, and pass it as a query parameter
-    RewriteCond %{HTTP_USER_AGENT} (facebookexternalhit|facebot|meta-externalagent|twitterbot|linkedinbot|whatsapp|discordbot|skype|slackbot|telegrambot|pinterest|applebot|redditbot|bluesky|cardyb|mastodon|embedly|iframely) [NC]
+    # 1. Intercept bots, capture the numeric ID, story slug, profile, or shared achievement, and pass query parameters
+    RewriteCond %{HTTP_USER_AGENT} (facebookexternalhit|facebot|facebookcatalog|meta-externalagent|meta-externalfetcher|meta-external|twitterbot|linkedinbot|whatsapp|discordbot|skype|slackbot|telegrambot|pinterest|applebot|redditbot|bluesky|cardyb|mastodon|embedly|iframely) [NC]
     RewriteRule ^recipe/([0-9]+)/?$ bot-handler.php?id=$1 [QSA,L]
 
-    RewriteCond %{HTTP_USER_AGENT} (facebookexternalhit|facebot|meta-externalagent|twitterbot|linkedinbot|whatsapp|discordbot|skype|slackbot|telegrambot|pinterest|applebot|redditbot|bluesky|cardyb|mastodon|embedly|iframely) [NC]
+    RewriteCond %{HTTP_USER_AGENT} (facebookexternalhit|facebot|facebookcatalog|meta-externalagent|meta-externalfetcher|meta-external|twitterbot|linkedinbot|whatsapp|discordbot|skype|slackbot|telegrambot|pinterest|applebot|redditbot|bluesky|cardyb|mastodon|embedly|iframely) [NC]
     RewriteRule ^stories/([a-zA-Z0-9_-]+)/?$ story-meta.php?slug=$1 [QSA,L]
+
+    RewriteCond %{HTTP_USER_AGENT} (facebookexternalhit|facebot|facebookcatalog|meta-externalagent|meta-externalfetcher|meta-external|twitterbot|linkedinbot|whatsapp|discordbot|skype|slackbot|telegrambot|pinterest|applebot|redditbot|bluesky|cardyb|mastodon|embedly|iframely) [NC]
+    RewriteRule ^profile/([a-zA-Z0-9_.-]+)/?$ profile-meta.php?mode=profile&identifier=$1 [QSA,L]
+
+    RewriteCond %{HTTP_USER_AGENT} (facebookexternalhit|facebot|facebookcatalog|meta-externalagent|meta-externalfetcher|meta-external|twitterbot|linkedinbot|whatsapp|discordbot|skype|slackbot|telegrambot|pinterest|applebot|redditbot|bluesky|cardyb|mastodon|embedly|iframely) [NC]
+    RewriteRule ^achievements/shared/([a-zA-Z0-9_.-]+)/([a-zA-Z0-9_-]+)/([0-9]+)/?$ profile-meta.php?mode=achievements&identifier=$1&badge_key=$2&level=$3 [QSA,L]
+
+    RewriteCond %{HTTP_USER_AGENT} (facebookexternalhit|facebot|facebookcatalog|meta-externalagent|meta-externalfetcher|meta-external|twitterbot|linkedinbot|whatsapp|discordbot|skype|slackbot|telegrambot|pinterest|applebot|redditbot|bluesky|cardyb|mastodon|embedly|iframely) [NC]
+    RewriteRule ^achievements/shared/([a-zA-Z0-9_.-]+)/?$ profile-meta.php?mode=achievements&identifier=$1 [QSA,L]
     
     # 2. Standard routing for actual humans (forwarding to index.php)
     RewriteCond %{REQUEST_FILENAME} !-f

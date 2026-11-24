@@ -841,18 +841,30 @@ class ProfileController {
             $user = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
         }
 
-        $basePath = $this->resolveBaseOgImagePath();
-        if (!$basePath || !extension_loaded('gd')) {
+        if (!extension_loaded('gd')) {
             if (!headers_sent()) {
-                http_response_code(404);
-                echo json_encode(["success" => false, "message" => "Base OGP image unavailable."]);
+                http_response_code(500);
+                echo json_encode(["success" => false, "message" => "GD extension unavailable."]);
             }
             return;
         }
 
         $outW = 1200;
         $outH = 630;
-        $canvas = $this->createResizedCoverCanvas($basePath, $outW, $outH);
+        $canvas = $user ? $this->loadLatestPublishedRecipeOgCanvas((int)$user['id'], $outW, $outH) : null;
+
+        if (!$canvas) {
+            $basePath = $this->resolveBaseOgImagePath();
+            if (!$basePath) {
+                if (!headers_sent()) {
+                    http_response_code(404);
+                    echo json_encode(["success" => false, "message" => "Base OGP image unavailable."]);
+                }
+                return;
+            }
+            $canvas = $this->createResizedCoverCanvas($basePath, $outW, $outH);
+        }
+
         if (!$canvas) {
             if (!headers_sent()) {
                 http_response_code(500);
@@ -870,12 +882,22 @@ class ProfileController {
             $this->compositeAchievementCardOnOgCanvas($canvas, $cardData);
         }
 
+        ob_start();
+        imagejpeg($canvas, null, 88);
+        $jpegBytes = (string)ob_get_clean();
+
         if (!headers_sent()) {
             header_remove('Content-Type');
+            header_remove('X-Frame-Options');
+            header('Access-Control-Allow-Origin: *');
             header('Content-Type: image/jpeg');
+            header('Content-Length: ' . strlen($jpegBytes));
             header('Cache-Control: public, max-age=3600');
         }
-        imagejpeg($canvas, null, 88);
+        if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'HEAD') {
+            return;
+        }
+        echo $jpegBytes;
     }
 
     /**
@@ -898,7 +920,46 @@ class ProfileController {
     }
 
     /**
-     * Loads the base OGP JPEG and center-crops/scales it to exact dimensions.
+     * Loads the user's most recently published recipe image (is_public = 1)
+     * and cover-scales it to the target OGP dimensions, or returns null when unavailable.
+     */
+    private function loadLatestPublishedRecipeOgCanvas(int $userId, int $targetW, int $targetH) {
+        if ($userId <= 0) {
+            return null;
+        }
+
+        $stmt = $this->db->prepare("
+            SELECT image_url
+            FROM recipes
+            WHERE user_id = ?
+              AND is_public = 1
+              AND image_url IS NOT NULL
+              AND TRIM(image_url) != ''
+            ORDER BY created_at DESC, id DESC
+            LIMIT 5
+        ");
+        $stmt->execute([$userId]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        foreach ($rows as $row) {
+            $imgUrl = trim((string)($row['image_url'] ?? ''));
+            if ($imgUrl === '') {
+                continue;
+            }
+            $src = $this->loadAvatarGdImage($imgUrl);
+            if ($src) {
+                $canvas = $this->createResizedCoverCanvasFromGd($src, $targetW, $targetH);
+                if ($canvas) {
+                    return $canvas;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Loads an image file from disk and center-crops/scales it to exact dimensions.
      */
     private function createResizedCoverCanvas(string $path, int $targetW, int $targetH) {
         $bytes = @file_get_contents($path);
@@ -910,6 +971,13 @@ class ProfileController {
             return null;
         }
 
+        return $this->createResizedCoverCanvasFromGd($src, $targetW, $targetH);
+    }
+
+    /**
+     * Center-crops and cover-scales a GD image to exact target dimensions.
+     */
+    private function createResizedCoverCanvasFromGd($src, int $targetW, int $targetH) {
         $srcW = imagesx($src);
         $srcH = imagesy($src);
         if ($srcW <= 0 || $srcH <= 0) {
