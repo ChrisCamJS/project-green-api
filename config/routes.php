@@ -71,7 +71,6 @@ $router->add('POST', '/recipes/save-generated', 'RecipeController', 'saveGenerat
 $router->add('POST', '/ai/chat', 'AiController', 'chat');
 $router->add('POST', '/ai/image', 'AiController', 'generateImage');
 $router->add('POST', '/ai/live-token', 'AiController', 'createLiveToken');
-$router->add('POST', '/ai/tts', 'AiController', 'synthesizeSpeech');
 $router->add('POST', '/ai/google-drive-fetch', 'AiController', 'fetchGoogleDriveFile');
 
 // PAYMENTS & TOKEN PURCHASES
