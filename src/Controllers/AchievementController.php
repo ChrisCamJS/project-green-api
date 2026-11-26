@@ -267,8 +267,10 @@ class AchievementController {
             $nextTarget = null;
             $nextName = null;
 
+            $trackLevels = [];
             foreach ($meta['levels'] as $lvl => $lvlMeta) {
-                if (!empty($earnedMap[$k][$lvl])) {
+                $isUnlocked = !empty($earnedMap[$k][$lvl]);
+                if ($isUnlocked) {
                     $highestLevel = $lvl;
                     $highestEarnedAt = $earnedMap[$k][$lvl];
                 } elseif ($nextLevel === null) {
@@ -276,6 +278,14 @@ class AchievementController {
                     $nextTarget = $lvlMeta['target'];
                     $nextName = $lvlMeta['name'];
                 }
+                $trackLevels[] = [
+                    'level' => $lvl,
+                    'name' => $lvlMeta['name'],
+                    'target' => $lvlMeta['target'],
+                    'description' => $lvlMeta['desc'],
+                    'unlocked' => $isUnlocked,
+                    'earned_at' => $isUnlocked ? $earnedMap[$k][$lvl] : null,
+                ];
             }
 
             $tracks[] = [
@@ -291,6 +301,7 @@ class AchievementController {
                 'next_level' => $nextLevel,
                 'next_target' => $nextTarget,
                 'next_level_name' => $nextName,
+                'levels' => $trackLevels,
             ];
         }
 

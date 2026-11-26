@@ -280,8 +280,10 @@ class AuthController {
             return;
         }
 
+        \App\Services\UsageLogService::ensureUserModerationColumns($db);
+
         // Updated query to check against the email column instead of username
-        $sql = "SELECT id, username, email, password_hash, is_admin, is_verified, account_tier, generation_tokens,
+        $sql = "SELECT id, username, email, password_hash, is_admin, is_verified, is_suspended, suspended_reason, account_tier, generation_tokens,
                        display_name, location, bio, profile_image, favorite_cuisine, dietary_focus, allergies, website_url, pronouns,
                        height_ft, height_in, weight_lbs, age, gender, activity_level, bmi, bmr, tdee,
                        calorie_target, macro_plan, custom_protein_pct, custom_carbs_pct, custom_fat_pct,
@@ -293,6 +295,15 @@ class AuthController {
 
         // verify the user exists and the password matches the hash
         if ($user && password_verify($password, $user['password_hash'])) {
+            if (!empty($user['is_suspended'])) {
+                http_response_code(403);
+                $reasonSuffix = !empty($user['suspended_reason']) ? (' Reason: ' . $user['suspended_reason']) : '';
+                echo json_encode([
+                    "success" => false,
+                    "message" => "Your account has been suspended. Please contact support@theveggievault.com for assistance." . $reasonSuffix
+                ]);
+                return;
+            }
             if (isset($user['is_verified']) && (int)$user['is_verified'] === 0) {
                 http_response_code(403);
                 echo json_encode([
@@ -593,6 +604,13 @@ class AuthController {
 
         $db = Database::connect();
 
+        if (\App\Services\UsageLogService::isUserSuspended($db, (int)$userId)) {
+            session_destroy();
+            http_response_code(403);
+            echo json_encode(["success" => false, "message" => "Your account has been suspended. Please contact support@theveggievault.com."]);
+            return;
+        }
+
         // First, check their current balance
         $checkSql = "SELECT generation_tokens FROM users WHERE id = :id";
         $checkStmt = $db->prepare($checkSql);
@@ -617,6 +635,10 @@ class AuthController {
             
             // Keep the PHP session data accurate too
             $_SESSION['generation_tokens'] = $newBalance;
+
+            \App\Services\UsageLogService::logUsage($db, (int)$userId, 'token_deduct', [
+                'vault_tokens_spent' => $cost,
+            ]);
             
             echo json_encode(["success" => true, "tokensRemaining" => $newBalance, "message" => "Tokens deducted."]);
         } else {

@@ -3,6 +3,7 @@
 namespace App\Controllers;
 
 use App\Database;
+use App\Services\UsageLogService;
 
 class AiController {
     private const CHAT_MODEL = 'gemini-3.5-flash-lite';
@@ -18,7 +19,14 @@ class AiController {
             echo json_encode(['success' => false, 'message' => 'Authentication required.']);
             exit;
         }
-        return (int)$_SESSION['user_id'];
+        $userId = (int)$_SESSION['user_id'];
+        if (UsageLogService::isUserSuspended(Database::connect(), $userId)) {
+            session_destroy();
+            http_response_code(403);
+            echo json_encode(['success' => false, 'message' => 'Your account is suspended. Please contact support@theveggievault.com.']);
+            exit;
+        }
+        return $userId;
     }
 
     /**
@@ -142,7 +150,7 @@ class AiController {
      * Proxies text chat requests to Gemini without exposing the API key to the browser.
      */
     public function chat(): void {
-        $this->requireAuth();
+        $userId = $this->requireAuth();
         $apiKey = $this->getGeminiApiKey();
 
         $rawInput = file_get_contents('php://input');
@@ -198,6 +206,18 @@ class AiController {
             return;
         }
 
+        $usage = $res['data']['usageMetadata'] ?? [];
+        $promptTokens = (int)($usage['promptTokenCount'] ?? 0);
+        $outputTokens = (int)($usage['candidatesTokenCount'] ?? 0);
+        $totalTokens = (int)($usage['totalTokenCount'] ?? ($promptTokens + $outputTokens));
+        UsageLogService::logUsage(Database::connect(), $userId, 'ai_chat', [
+            'model' => self::CHAT_MODEL,
+            'prompt_tokens' => $promptTokens,
+            'output_tokens' => $outputTokens,
+            'total_tokens' => $totalTokens,
+            'estimated_cost_usd' => UsageLogService::estimateGeminiTextCostUsd($promptTokens, $outputTokens),
+        ]);
+
         echo json_encode(['success' => true, 'text' => $text]);
     }
 
@@ -206,7 +226,7 @@ class AiController {
      * Proxies recipe image generation requests to Gemini without exposing the API key.
      */
     public function generateImage(): void {
-        $this->requireAuth();
+        $userId = $this->requireAuth();
         $apiKey = $this->getGeminiApiKey();
 
         $input = json_decode(file_get_contents('php://input'), true) ?: [];
@@ -255,6 +275,18 @@ class AiController {
             }
         }
 
+        $usage = $res['data']['usageMetadata'] ?? [];
+        $promptTokens = (int)($usage['promptTokenCount'] ?? 0);
+        $outputTokens = (int)($usage['candidatesTokenCount'] ?? 0);
+        $totalTokens = (int)($usage['totalTokenCount'] ?? ($promptTokens + $outputTokens));
+        UsageLogService::logUsage(Database::connect(), $userId, 'ai_image', [
+            'model' => self::IMAGE_MODEL,
+            'prompt_tokens' => $promptTokens,
+            'output_tokens' => $outputTokens,
+            'total_tokens' => $totalTokens,
+            'estimated_cost_usd' => UsageLogService::estimateGeminiImageCostUsd($promptTokens, $outputTokens),
+        ]);
+
         echo json_encode([
             'success' => true,
             'imageBase64' => $imageBase64,
@@ -267,7 +299,7 @@ class AiController {
      * never leaves the server.
      */
     public function createLiveToken(): void {
-        $this->requireAuth();
+        $userId = $this->requireAuth();
         $apiKey = $this->getGeminiApiKey();
 
         $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
@@ -291,6 +323,10 @@ class AiController {
         }
 
         $adminContextBlock = $this->getActiveAdminContextPromptBlock();
+        UsageLogService::logUsage(Database::connect(), $userId, 'ai_live_token', [
+            'model' => 'gemini-live',
+            'estimated_cost_usd' => 0.005,
+        ]);
 
         echo json_encode([
             'success' => true,

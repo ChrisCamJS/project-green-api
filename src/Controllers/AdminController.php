@@ -495,5 +495,391 @@ class AdminController {
         ]);
     }
 
+    /**
+     * GET /admin/usage
+     * Returns per-user API & token usage statistics for spotting abuse or heavy usage.
+     */
+    public function getUsageAnalytics(): void {
+        $this->requireAdminSessionUserId();
+        $db = Database::connect();
+        \App\Services\UsageLogService::ensureSchema($db);
+        \App\Services\UsageLogService::ensureUserModerationColumns($db);
+
+        $sql = "
+            SELECT
+                u.id,
+                u.username,
+                u.email,
+                u.account_tier,
+                u.is_admin,
+                u.is_verified,
+                u.is_suspended,
+                u.suspended_reason,
+                u.suspended_at,
+                u.generation_tokens AS tokens_balance,
+                u.created_at,
+                COALESCE(l.total_requests, 0) AS total_requests,
+                COALESCE(l.requests_24h, 0) AS requests_24h,
+                COALESCE(l.requests_7d, 0) AS requests_7d,
+                COALESCE(l.ai_chat_requests, 0) AS ai_chat_requests,
+                COALESCE(l.ai_image_requests, 0) AS ai_image_requests,
+                COALESCE(l.ai_live_requests, 0) AS ai_live_requests,
+                COALESCE(l.prompt_tokens, 0) AS prompt_tokens,
+                COALESCE(l.output_tokens, 0) AS output_tokens,
+                COALESCE(l.total_ai_tokens, 0) AS total_ai_tokens,
+                COALESCE(l.vault_tokens_spent, 0) AS vault_tokens_spent,
+                COALESCE(l.estimated_cost_usd, 0) AS estimated_cost_usd,
+                l.last_api_at,
+                COALESCE(r.recipes_created, 0) AS recipes_created,
+                COALESCE(c.comments_count, 0) AS comments_count
+            FROM users u
+            LEFT JOIN (
+                SELECT
+                    user_id,
+                    COUNT(*) AS total_requests,
+                    SUM(CASE WHEN created_at >= DATE_SUB(NOW(), INTERVAL 1 DAY) THEN 1 ELSE 0 END) AS requests_24h,
+                    SUM(CASE WHEN created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS requests_7d,
+                    SUM(CASE WHEN endpoint = 'ai_chat' THEN 1 ELSE 0 END) AS ai_chat_requests,
+                    SUM(CASE WHEN endpoint = 'ai_image' THEN 1 ELSE 0 END) AS ai_image_requests,
+                    SUM(CASE WHEN endpoint = 'ai_live_token' THEN 1 ELSE 0 END) AS ai_live_requests,
+                    SUM(prompt_tokens) AS prompt_tokens,
+                    SUM(output_tokens) AS output_tokens,
+                    SUM(total_tokens) AS total_ai_tokens,
+                    SUM(vault_tokens_spent) AS vault_tokens_spent,
+                    SUM(estimated_cost_usd) AS estimated_cost_usd,
+                    MAX(created_at) AS last_api_at
+                FROM api_usage_logs
+                GROUP BY user_id
+            ) l ON l.user_id = u.id
+            LEFT JOIN (
+                SELECT user_id, COUNT(*) AS recipes_created
+                FROM recipes
+                GROUP BY user_id
+            ) r ON r.user_id = u.id
+            LEFT JOIN (
+                SELECT user_id, COUNT(*) AS comments_count
+                FROM recipe_comments
+                GROUP BY user_id
+            ) c ON c.user_id = u.id
+            ORDER BY
+                COALESCE(l.estimated_cost_usd, 0) DESC,
+                COALESCE(l.total_requests, 0) DESC,
+                COALESCE(l.vault_tokens_spent, 0) DESC,
+                COALESCE(r.recipes_created, 0) DESC,
+                u.id ASC
+        ";
+
+        $rows = $db->query($sql)->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        $summary = [
+            'total_users' => count($rows),
+            'active_api_users' => 0,
+            'total_requests' => 0,
+            'requests_24h' => 0,
+            'total_ai_tokens' => 0,
+            'total_vault_tokens_spent' => 0.0,
+            'total_estimated_cost_usd' => 0.0,
+        ];
+
+        $formatted = [];
+        foreach ($rows as $row) {
+            $reqCount = (int)$row['total_requests'];
+            $req24h = (int)$row['requests_24h'];
+            $aiTokens = (int)$row['total_ai_tokens'];
+            $vaultSpent = round((float)$row['vault_tokens_spent'], 2);
+            $estCost = round((float)$row['estimated_cost_usd'], 6);
+
+            if ($reqCount > 0) {
+                $summary['active_api_users']++;
+            }
+            $summary['total_requests'] += $reqCount;
+            $summary['requests_24h'] += $req24h;
+            $summary['total_ai_tokens'] += $aiTokens;
+            $summary['total_vault_tokens_spent'] += $vaultSpent;
+            $summary['total_estimated_cost_usd'] += $estCost;
+
+            $formatted[] = [
+                'id' => (int)$row['id'],
+                'username' => $row['username'],
+                'email' => $row['email'],
+                'account_tier' => $row['account_tier'],
+                'is_admin' => (bool)$row['is_admin'],
+                'is_verified' => (bool)$row['is_verified'],
+                'is_suspended' => (bool)($row['is_suspended'] ?? false),
+                'suspended_reason' => $row['suspended_reason'] ?? null,
+                'suspended_at' => $row['suspended_at'] ?? null,
+                'tokens_balance' => round((float)$row['tokens_balance'], 2),
+                'created_at' => $row['created_at'],
+                'total_requests' => $reqCount,
+                'requests_24h' => $req24h,
+                'requests_7d' => (int)$row['requests_7d'],
+                'ai_chat_requests' => (int)$row['ai_chat_requests'],
+                'ai_image_requests' => (int)$row['ai_image_requests'],
+                'ai_live_requests' => (int)$row['ai_live_requests'],
+                'prompt_tokens' => (int)$row['prompt_tokens'],
+                'output_tokens' => (int)$row['output_tokens'],
+                'total_ai_tokens' => $aiTokens,
+                'vault_tokens_spent' => $vaultSpent,
+                'estimated_cost_usd' => $estCost,
+                'last_api_at' => $row['last_api_at'],
+                'recipes_created' => (int)$row['recipes_created'],
+                'comments_count' => (int)$row['comments_count'],
+            ];
+        }
+
+        $summary['total_vault_tokens_spent'] = round($summary['total_vault_tokens_spent'], 2);
+        $summary['total_estimated_cost_usd'] = round($summary['total_estimated_cost_usd'], 6);
+
+        echo json_encode([
+            'success' => true,
+            'summary' => $summary,
+            'users' => $formatted,
+        ]);
+    }
+
+    /**
+     * POST /admin/users/grant-tokens
+     * Dispenses or refunds generation tokens to a user found by user_id, username, or email.
+     */
+    public function grantUserTokens(): void {
+        $adminUserId = $this->requireAdminSessionUserId();
+        $data = json_decode(file_get_contents("php://input"), true) ?: [];
+
+        $targetUserId = (int)($data['user_id'] ?? 0);
+        $identifier = trim((string)($data['identifier'] ?? ''));
+        $amount = round((float)($data['amount'] ?? 0), 2);
+        $reason = trim((string)($data['reason'] ?? ''));
+
+        if ($amount <= 0 || $amount > 100000) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Token amount must be between 0.01 and 100,000."]);
+            return;
+        }
+
+        if ($targetUserId <= 0 && $identifier === '') {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Please specify a user by ID, username, or email."]);
+            return;
+        }
+
+        $db = Database::connect();
+        if ($targetUserId > 0) {
+            $stmt = $db->prepare("SELECT id, username, email, generation_tokens FROM users WHERE id = ? LIMIT 1");
+            $stmt->execute([$targetUserId]);
+        } else {
+            $cleanIdentifier = ltrim($identifier, '@');
+            $stmt = $db->prepare("SELECT id, username, email, generation_tokens FROM users WHERE LOWER(email) = LOWER(?) OR LOWER(username) = LOWER(?) LIMIT 1");
+            $stmt->execute([$identifier, $cleanIdentifier]);
+        }
+        $target = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$target) {
+            http_response_code(404);
+            echo json_encode(["success" => false, "message" => "No user found matching that username or email."]);
+            return;
+        }
+
+        $uid = (int)$target['id'];
+        $upd = $db->prepare("UPDATE users SET generation_tokens = generation_tokens + :amt WHERE id = :id");
+        $upd->execute([':amt' => $amount, ':id' => $uid]);
+
+        $balStmt = $db->prepare("SELECT generation_tokens FROM users WHERE id = ? LIMIT 1");
+        $balStmt->execute([$uid]);
+        $newBalance = round((float)$balStmt->fetchColumn(), 2);
+
+        if ($uid === $adminUserId) {
+            $_SESSION['generation_tokens'] = $newBalance;
+        }
+
+        // Notify the recipient in-app when tokens are granted
+        try {
+            $msg = "You received +{$amount} Vault token" . ($amount == 1.0 ? '' : 's') . " from an admin"
+                . ($reason !== '' ? ": {$reason}" : '.');
+            $notifStmt = $db->prepare("
+                INSERT INTO notifications (user_id, actor_user_id, actor_username, recipe_id, comment_id, type, message)
+                VALUES (:uid, :aid, :aname, 0, NULL, 'admin_token_grant', :msg)
+            ");
+            $notifStmt->execute([
+                ':uid' => $uid,
+                ':aid' => $adminUserId,
+                ':aname' => $_SESSION['username'] ?? 'Admin',
+                ':msg' => mb_substr($msg, 0, 250),
+            ]);
+        } catch (\Throwable $ignore) {
+            // Non-blocking notification
+        }
+
+        echo json_encode([
+            "success" => true,
+            "message" => "Added +{$amount} tokens to @{$target['username']} (New balance: {$newBalance}).",
+            "user_id" => $uid,
+            "username" => $target['username'],
+            "tokens_balance" => $newBalance,
+        ]);
+    }
+
+    /**
+     * PUT /admin/users/suspend
+     * Suspends or unsuspends a non-admin user account.
+     */
+    public function toggleUserSuspension(): void {
+        $adminUserId = $this->requireAdminSessionUserId();
+        $data = json_decode(file_get_contents("php://input"), true) ?: [];
+        $targetUserId = (int)($data['user_id'] ?? $data['id'] ?? $_GET['id'] ?? 0);
+        $reason = trim((string)($data['reason'] ?? ''));
+
+        if ($targetUserId <= 0) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Valid user ID is required."]);
+            return;
+        }
+
+        if ($targetUserId === $adminUserId) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "You cannot suspend your own admin account."]);
+            return;
+        }
+
+        $db = Database::connect();
+        \App\Services\UsageLogService::ensureUserModerationColumns($db);
+
+        $stmt = $db->prepare("SELECT id, username, is_admin, is_suspended FROM users WHERE id = ? LIMIT 1");
+        $stmt->execute([$targetUserId]);
+        $target = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$target) {
+            http_response_code(404);
+            echo json_encode(["success" => false, "message" => "User account not found."]);
+            return;
+        }
+
+        if (!empty($target['is_admin'])) {
+            http_response_code(403);
+            echo json_encode(["success" => false, "message" => "Admin accounts cannot be suspended."]);
+            return;
+        }
+
+        $nextSuspended = array_key_exists('suspend', $data)
+            ? (bool)$data['suspend']
+            : empty($target['is_suspended']);
+
+        if ($nextSuspended) {
+            $upd = $db->prepare("
+                UPDATE users
+                SET is_suspended = 1,
+                    suspended_reason = :reason,
+                    suspended_at = NOW()
+                WHERE id = :id
+            ");
+            $upd->execute([
+                ':reason' => $reason !== '' ? mb_substr($reason, 0, 255) : null,
+                ':id' => $targetUserId,
+            ]);
+        } else {
+            $upd = $db->prepare("
+                UPDATE users
+                SET is_suspended = 0,
+                    suspended_reason = NULL,
+                    suspended_at = NULL
+                WHERE id = :id
+            ");
+            $upd->execute([':id' => $targetUserId]);
+        }
+
+        echo json_encode([
+            "success" => true,
+            "user_id" => $targetUserId,
+            "is_suspended" => $nextSuspended,
+            "suspended_reason" => $nextSuspended ? ($reason !== '' ? $reason : null) : null,
+            "message" => $nextSuspended
+                ? "Suspended @" . $target['username'] . "."
+                : "Restored @" . $target['username'] . "'s account.",
+        ]);
+    }
+
+    /**
+     * DELETE /admin/users
+     * Permanently removes a non-admin user account and associated data.
+     */
+    public function deleteUserAccount(): void {
+        $adminUserId = $this->requireAdminSessionUserId();
+        $data = json_decode(file_get_contents("php://input"), true) ?: [];
+        $targetUserId = (int)($_GET['id'] ?? $data['user_id'] ?? $data['id'] ?? 0);
+
+        if ($targetUserId <= 0) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Valid user ID is required."]);
+            return;
+        }
+
+        if ($targetUserId === $adminUserId) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "You cannot delete your own admin account."]);
+            return;
+        }
+
+        $db = Database::connect();
+        $stmt = $db->prepare("SELECT id, username, is_admin FROM users WHERE id = ? LIMIT 1");
+        $stmt->execute([$targetUserId]);
+        $target = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$target) {
+            http_response_code(404);
+            echo json_encode(["success" => false, "message" => "User account not found."]);
+            return;
+        }
+
+        if (!empty($target['is_admin'])) {
+            http_response_code(403);
+            echo json_encode(["success" => false, "message" => "Admin accounts cannot be deleted from here."]);
+            return;
+        }
+
+        try {
+            $db->beginTransaction();
+
+            $cleanupQueries = [
+                "DELETE FROM api_usage_logs WHERE user_id = ?",
+                "DELETE FROM notifications WHERE user_id = ? OR actor_user_id = ?",
+                "DELETE FROM user_achievements WHERE user_id = ?",
+                "DELETE FROM recent_chats WHERE user_id = ?",
+                "DELETE FROM meal_plans WHERE user_id = ?",
+                "DELETE FROM favorites WHERE user_id = ?",
+                "DELETE FROM follows WHERE follower_id = ? OR followed_id = ?",
+                "DELETE FROM recipe_comments WHERE user_id = ?",
+                "DELETE FROM admin_emma_context WHERE user_id = ?",
+                "DELETE FROM recipes WHERE user_id = ?",
+            ];
+
+            foreach ($cleanupQueries as $q) {
+                try {
+                    $del = $db->prepare($q);
+                    $paramCount = substr_count($q, '?');
+                    $del->execute($paramCount === 2 ? [$targetUserId, $targetUserId] : [$targetUserId]);
+                } catch (\Throwable $ignore) {
+                    // Skip optional/differently-named tables
+                }
+            }
+
+            $userDel = $db->prepare("DELETE FROM users WHERE id = ?");
+            $userDel->execute([$targetUserId]);
+            $db->commit();
+
+            echo json_encode([
+                "success" => true,
+                "message" => "Removed account @" . $target['username'] . ".",
+            ]);
+        } catch (\Throwable $e) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            http_response_code(500);
+            echo json_encode([
+                "success" => false,
+                "message" => "Failed to remove user account: " . $e->getMessage(),
+            ]);
+        }
+    }
+
 }
 

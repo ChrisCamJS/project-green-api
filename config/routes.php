@@ -26,6 +26,10 @@ $router->add('PUT', '/admin/recipes', 'AdminController', 'updateAdminRecipes');
 $router->add('GET', '/admin/emma-context', 'AdminController', 'getAdminEmmaContext');
 $router->add('PUT', '/admin/emma-context', 'AdminController', 'saveAdminEmmaContext');
 $router->add('DELETE', '/admin/emma-context', 'AdminController', 'deleteAdminEmmaContext');
+$router->add('GET', '/admin/usage', 'AdminController', 'getUsageAnalytics');
+$router->add('POST', '/admin/users/grant-tokens', 'AdminController', 'grantUserTokens');
+$router->add('PUT', '/admin/users/suspend', 'AdminController', 'toggleUserSuspension');
+$router->add('DELETE', '/admin/users', 'AdminController', 'deleteUserAccount');
 $router->add('POST', '/users/request-reset', 'AuthController', 'requestPasswordReset');
 $router->add('POST', '/users/reset-password', 'AuthController', 'resetPassword');
 
