@@ -505,6 +505,15 @@ class AdminController {
         \App\Services\UsageLogService::ensureSchema($db);
         \App\Services\UsageLogService::ensureUserModerationColumns($db);
 
+        $period = strtolower(trim((string)($_GET['period'] ?? 'all')));
+        $dateWhere = match ($period) {
+            'today' => 'WHERE created_at >= CURDATE()',
+            '7d' => 'WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)',
+            '30d' => 'WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)',
+            '90d' => 'WHERE created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)',
+            default => '',
+        };
+
         $sql = "
             SELECT
                 u.id,
@@ -549,16 +558,19 @@ class AdminController {
                     SUM(estimated_cost_usd) AS estimated_cost_usd,
                     MAX(created_at) AS last_api_at
                 FROM api_usage_logs
+                {$dateWhere}
                 GROUP BY user_id
             ) l ON l.user_id = u.id
             LEFT JOIN (
                 SELECT user_id, COUNT(*) AS recipes_created
                 FROM recipes
+                {$dateWhere}
                 GROUP BY user_id
             ) r ON r.user_id = u.id
             LEFT JOIN (
                 SELECT user_id, COUNT(*) AS comments_count
                 FROM recipe_comments
+                {$dateWhere}
                 GROUP BY user_id
             ) c ON c.user_id = u.id
             ORDER BY
@@ -632,6 +644,7 @@ class AdminController {
 
         echo json_encode([
             'success' => true,
+            'period' => $period,
             'summary' => $summary,
             'users' => $formatted,
         ]);
