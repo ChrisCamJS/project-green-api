@@ -4,7 +4,7 @@
  * Lightweight HTML response serving dynamic Open Graph and Twitter Card tags
  * for social media bots crawling /profile/:identifier or /achievements/shared/:identifier.
  * Pointing og:image / twitter:image to /users/profile-og-image composites the chef's
- * circular avatar on top of og-vault-preview.jpeg (1200x630).
+ * circular avatar on top of og-vault-preview.jpg (1200x630).
  */
 
 $mode = ($_GET['mode'] ?? 'profile') === 'achievements' ? 'achievements' : 'profile';
@@ -167,7 +167,7 @@ if ($mode === 'achievements') {
 
 $ogImage = ($profile || $identifier !== '')
     ? rtrim($apiBaseUrl, '/') . '/users/profile-og-image?' . $ogImageQuery
-    : "{$siteBaseUrl}/og-vault-preview.jpeg";
+    : "{$siteBaseUrl}/og-vault-preview.jpg";
 $imageAlt = "{$displayName} (@{$username}) on The Veggie Vault";
 
 $jsonLd = [

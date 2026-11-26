@@ -226,7 +226,7 @@ if (
     strpos($imagePath, 'default-veggie-vault-placeholder') !== false ||
     $imageSource === 'none'
 ) {
-    $image = 'https://theveggievault.com/og-vault-preview.jpeg';
+    $image = 'https://theveggievault.com/og-vault-preview.jpg';
 } elseif (preg_match('#^https?://#i', $imagePath)) {
     $image = $imagePath;
 } else {

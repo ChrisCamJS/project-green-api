@@ -901,15 +901,15 @@ class ProfileController {
     }
 
     /**
-     * Locates og-vault-preview.jpeg across API and frontend public folders.
+     * Locates og-vault-preview.jpg across API and frontend public folders.
      */
     private function resolveBaseOgImagePath(): ?string {
         $candidates = [
-            __DIR__ . '/../../public/og-vault-preview.jpeg',
-            dirname(__DIR__, 3) . '/project-green/public/og-vault-preview.jpeg',
+            __DIR__ . '/../../public/og-vault-preview.jpg',
+            dirname(__DIR__, 3) . '/project-green/public/og-vault-preview.jpg',
         ];
         if (!empty($_SERVER['DOCUMENT_ROOT'])) {
-            $candidates[] = rtrim($_SERVER['DOCUMENT_ROOT'], '/\\') . '/og-vault-preview.jpeg';
+            $candidates[] = rtrim($_SERVER['DOCUMENT_ROOT'], '/\\') . '/og-vault-preview.jpg';
         }
         foreach ($candidates as $path) {
             if (is_string($path) && is_file($path) && is_readable($path)) {

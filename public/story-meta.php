@@ -98,7 +98,7 @@ if (!$story && function_exists('curl_init')) {
 $resolveAbsoluteImage = static function (?string $rawPath) use ($apiBaseUrl, $siteBaseUrl): string {
     $path = trim((string)$rawPath);
     if ($path === '' || strpos($path, 'default-veggie-vault-placeholder') !== false) {
-        return $siteBaseUrl . '/og-vault-preview.jpeg';
+        return $siteBaseUrl . '/og-vault-preview.jpg';
     }
     if (preg_match('#^https?://#i', $path)) {
         return $path;
@@ -165,7 +165,7 @@ $blogSchema = [
         'url' => $siteBaseUrl,
         'logo' => [
             '@type' => 'ImageObject',
-            'url' => $siteBaseUrl . '/og-vault-preview.jpeg',
+            'url' => $siteBaseUrl . '/og-vault-preview.jpg',
         ],
     ],
 ];
