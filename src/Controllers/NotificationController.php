@@ -24,6 +24,14 @@ class NotificationController {
         $db = Database::connect();
         StoryService::ensureSchema($db);
 
+        // Sync achievements on notification fetch so any newly unlocked milestone
+        // immediately generates an achievement notification across all activity types.
+        try {
+            AchievementController::syncAndFetch($db, $userId);
+        } catch (\Throwable $e) {
+            // Non-fatal
+        }
+
         $stmt = $db->prepare("
             SELECT
                 n.id,

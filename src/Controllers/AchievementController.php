@@ -194,14 +194,40 @@ class AchievementController {
         }
 
         $catalog = self::getCatalog();
+        $newlyEarned = [];
 
         try {
             $ins = $db->prepare("INSERT IGNORE INTO user_achievements (user_id, achievement_key, level) VALUES (?, ?, ?)");
+            $notifIns = $db->prepare("
+                INSERT INTO notifications (user_id, actor_user_id, actor_username, recipe_id, comment_id, type, message)
+                VALUES (?, ?, 'The Veggie Vault', 0, NULL, 'achievement', ?)
+            ");
             foreach ($catalog as $key => $meta) {
                 $val = $counts[$key] ?? 0;
                 foreach ($meta['levels'] as $lvl => $lvlMeta) {
                     if ($val >= $lvlMeta['target']) {
                         $ins->execute([$userId, $key, (int)$lvl]);
+                        if ($ins->rowCount() > 0) {
+                            $newlyEarned[] = [
+                                'key' => $key,
+                                'level' => (int)$lvl,
+                                'title' => $meta['title'],
+                                'level_name' => $lvlMeta['name'],
+                                'icon' => $meta['icon'],
+                                'description' => $lvlMeta['desc'],
+                            ];
+                            $notifMsg = "{$meta['icon']} Achievement Unlocked! You earned Level {$lvl} \"{$lvlMeta['name']}\" ({$meta['title']} — {$lvlMeta['desc']}).";
+                            if (function_exists('mb_substr')) {
+                                $notifMsg = mb_substr($notifMsg, 0, 250, 'UTF-8');
+                            } else {
+                                $notifMsg = substr($notifMsg, 0, 250);
+                            }
+                            try {
+                                $notifIns->execute([$userId, $userId, $notifMsg]);
+                            } catch (\Throwable $ne) {
+                                // Non-fatal if notifications table isn't available yet
+                            }
+                        }
                     }
                 }
             }
@@ -272,6 +298,7 @@ class AchievementController {
             'earned' => $earned,
             'tracks' => $tracks,
             'total_badges' => count($earned),
+            'newly_earned' => $newlyEarned,
         ];
     }
 
