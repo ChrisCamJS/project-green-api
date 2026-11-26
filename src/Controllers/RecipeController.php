@@ -1477,9 +1477,9 @@ public function getAllRecipes() {
     }
 
     /**
-     * Loads a recipe and verifies the active user owns it (or is an admin).
+     * Loads a recipe and verifies the active user owns it (or is an admin when $allowAdmin is true).
      */
-    private function requireOwnedRecipe(int $recipeId, int $userId): array {
+    private function requireOwnedRecipe(int $recipeId, int $userId, bool $allowAdmin = true): array {
         $stmt = $this->db->prepare("SELECT id, user_id, yields, notes, image_url, image_source, is_public FROM recipes WHERE id = ?");
         $stmt->execute([$recipeId]);
         $recipe = $stmt->fetch(\PDO::FETCH_ASSOC);
@@ -1490,9 +1490,17 @@ public function getAllRecipes() {
             exit;
         }
 
-        if ((int)$recipe['user_id'] !== $userId && empty($_SESSION['is_admin'])) {
+        $isCreator = (int)$recipe['user_id'] === $userId;
+        $isAllowedAdmin = $allowAdmin && !empty($_SESSION['is_admin']);
+
+        if (!$isCreator && !$isAllowedAdmin) {
             http_response_code(403);
-            echo json_encode(["success" => false, "message" => "Hands off! You can only upgrade your own draft recipes."]);
+            echo json_encode([
+                "success" => false,
+                "message" => $allowAdmin
+                    ? "Hands off! You can only upgrade your own draft recipes."
+                    : "Only the recipe creator can manage photos for this recipe."
+            ]);
             exit;
         }
 
@@ -1539,7 +1547,7 @@ public function getAllRecipes() {
             return;
         }
 
-        $recipe = $this->requireOwnedRecipe($recipeId, $userId);
+        $recipe = $this->requireOwnedRecipe($recipeId, $userId, false);
 
         $base64Body = $rawImage;
         if (strpos($rawImage, 'data:image') === 0) {
@@ -2703,7 +2711,7 @@ public function getUserFavorites() {
             return;
         }
 
-        $recipe = $this->requireOwnedRecipe($recipeId, $userId);
+        $recipe = $this->requireOwnedRecipe($recipeId, $userId, false);
         $ownerUserId = (int)($recipe['user_id'] ?? $userId);
         $currentPrimary = (string)($recipe['image_url'] ?? '');
         $currentSource = (string)($recipe['image_source'] ?? 'none');
@@ -2817,7 +2825,7 @@ public function getUserFavorites() {
             return;
         }
 
-        $recipe = $this->requireOwnedRecipe($recipeId, $userId);
+        $recipe = $this->requireOwnedRecipe($recipeId, $userId, false);
         $ownerUserId = (int)($recipe['user_id'] ?? $userId);
         $this->seedOriginalRecipeImageIfNeeded(
             $recipeId,
@@ -2866,7 +2874,7 @@ public function getUserFavorites() {
             return;
         }
 
-        $recipe = $this->requireOwnedRecipe($recipeId, $userId);
+        $recipe = $this->requireOwnedRecipe($recipeId, $userId, false);
         $stmt = $this->db->prepare("SELECT id, image_url FROM recipe_images WHERE id = ? AND recipe_id = ? LIMIT 1");
         $stmt->execute([$imageId, $recipeId]);
         $target = $stmt->fetch(\PDO::FETCH_ASSOC);
