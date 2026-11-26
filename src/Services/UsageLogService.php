@@ -68,7 +68,10 @@ class UsageLogService {
         self::$schemaEnsured = true;
     }
 
-    public static function estimateGeminiTextCostUsd(int $promptTokens, int $outputTokens): float {
+    public static function estimateGeminiTextCostUsd(int $promptTokens, int $outputTokens, ?string $model = null): float {
+        if ($model !== null && stripos($model, '2.0-flash-lite') !== false) {
+            return ($promptTokens * 0.075 / 1000000) + ($outputTokens * 0.30 / 1000000);
+        }
         return ($promptTokens * 0.10 / 1000000) + ($outputTokens * 0.40 / 1000000);
     }
 

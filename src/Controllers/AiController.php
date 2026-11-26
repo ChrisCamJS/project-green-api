@@ -7,6 +7,9 @@ use App\Services\UsageLogService;
 
 class AiController {
     private const CHAT_MODEL = 'gemini-3.5-flash-lite';
+    private const FREE_CHAT_MODEL = 'gemini-3.5-flash-lite';
+    private const FREE_CHAT_MAX_OUTPUT_TOKENS = 1400;
+    private const FREE_CHAT_DAILY_LIMIT = 40;
     private const IMAGE_MODEL = 'gemini-3.1-flash-lite-image';
     private const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
 
@@ -167,6 +170,8 @@ class AiController {
         $input = json_decode((string)$rawInput, true) ?: [];
         $contents = $input['contents'] ?? null;
         $systemInstruction = $input['systemInstruction'] ?? null;
+        $purpose = trim((string)($input['purpose'] ?? ''));
+        $isFreeChat = ($purpose === 'free_chat');
 
         if (!is_array($contents) || empty($contents)) {
             http_response_code(400);
@@ -174,9 +179,45 @@ class AiController {
             return;
         }
 
+        $env = Database::loadEnv();
+        $freeChatModel = trim((string)($env['GEMINI_FREE_CHAT_MODEL'] ?? self::FREE_CHAT_MODEL)) ?: self::FREE_CHAT_MODEL;
+        $dailyLimit = max(5, (int)($env['FREE_CHAT_DAILY_LIMIT'] ?? self::FREE_CHAT_DAILY_LIMIT));
+
+        if ($isFreeChat && empty($_SESSION['is_admin'])) {
+            try {
+                $db = Database::connect();
+                UsageLogService::ensureSchema($db);
+                $limitStmt = $db->prepare("
+                    SELECT COUNT(*)
+                    FROM api_usage_logs
+                    WHERE user_id = :uid
+                      AND endpoint = 'ai_chat'
+                      AND model = :model
+                      AND created_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+                ");
+                $limitStmt->execute([':uid' => $userId, ':model' => $freeChatModel]);
+                $usedToday = (int)$limitStmt->fetchColumn();
+                if ($usedToday >= $dailyLimit) {
+                    http_response_code(429);
+                    echo json_encode([
+                        'success' => false,
+                        'message' => "You've reached today's free chat limit ({$dailyLimit} messages per 24h). Try again later or use Flavor Forge for recipe creation!",
+                    ]);
+                    return;
+                }
+            } catch (\Throwable $e) {
+                // Non-blocking if usage count query fails
+            }
+        }
+
         $payload = ['contents' => $contents];
         if (is_array($systemInstruction) && !empty($systemInstruction)) {
             $payload['systemInstruction'] = $systemInstruction;
+        }
+        if ($isFreeChat) {
+            $payload['generationConfig'] = [
+                'maxOutputTokens' => self::FREE_CHAT_MAX_OUTPUT_TOKENS,
+            ];
         }
         $adminContextBlock = $this->getActiveAdminContextPromptBlock();
         if ($adminContextBlock !== '') {
@@ -189,7 +230,8 @@ class AiController {
             $payload['systemInstruction']['parts'][] = ['text' => $adminContextBlock];
         }
 
-        $url = self::GEMINI_BASE . '/v1beta/models/' . self::CHAT_MODEL . ':generateContent';
+        $activeModel = $isFreeChat ? $freeChatModel : self::CHAT_MODEL;
+        $url = self::GEMINI_BASE . '/v1beta/models/' . $activeModel . ':generateContent';
         $res = $this->postGeminiJson($url, $payload, $apiKey, 60);
 
         if (!$res['ok']) {
@@ -211,11 +253,11 @@ class AiController {
         $outputTokens = (int)($usage['candidatesTokenCount'] ?? 0);
         $totalTokens = (int)($usage['totalTokenCount'] ?? ($promptTokens + $outputTokens));
         UsageLogService::logUsage(Database::connect(), $userId, 'ai_chat', [
-            'model' => self::CHAT_MODEL,
+            'model' => $activeModel,
             'prompt_tokens' => $promptTokens,
             'output_tokens' => $outputTokens,
             'total_tokens' => $totalTokens,
-            'estimated_cost_usd' => UsageLogService::estimateGeminiTextCostUsd($promptTokens, $outputTokens),
+            'estimated_cost_usd' => UsageLogService::estimateGeminiTextCostUsd($promptTokens, $outputTokens, $activeModel),
         ]);
 
         echo json_encode(['success' => true, 'text' => $text]);
