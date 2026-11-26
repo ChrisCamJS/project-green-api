@@ -2397,6 +2397,169 @@ public function getUserFavorites() {
     }
 
     /**
+     * Edit an existing comment (comment author only).
+     */
+    public function updateRecipeComment() {
+        $currentUser = $this->requireAuth();
+        $userId = (int)$currentUser['id'];
+
+        $data = json_decode(file_get_contents("php://input"), true);
+        $commentId = (int)($data['comment_id'] ?? $data['id'] ?? $_GET['id'] ?? 0);
+        $rawBody = trim((string)($data['body'] ?? ''));
+
+        if ($commentId <= 0 || $rawBody === '') {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Comment ID and non-empty text are required."]);
+            return;
+        }
+
+        $db = Database::connect();
+
+        try {
+            $stmt = $db->prepare("SELECT id, user_id FROM recipe_comments WHERE id = ? LIMIT 1");
+            $stmt->execute([$commentId]);
+            $target = $stmt->fetch(\PDO::FETCH_ASSOC);
+
+            if (!$target) {
+                http_response_code(404);
+                echo json_encode(["success" => false, "message" => "Comment not found."]);
+                return;
+            }
+
+            if (empty($target['user_id']) || (int)$target['user_id'] !== $userId) {
+                http_response_code(403);
+                echo json_encode(["success" => false, "message" => "You can only edit your own comments."]);
+                return;
+            }
+
+            (new ProfanityFilterService())->assertClean($rawBody, 'comment');
+            $body = htmlspecialchars($rawBody);
+
+            $updateStmt = $db->prepare("UPDATE recipe_comments SET body = ? WHERE id = ?");
+            $updateStmt->execute([$body, $commentId]);
+
+            echo json_encode([
+                "success" => true,
+                "message" => "Comment updated.",
+                "body" => $body,
+            ]);
+        } catch (\Exception $e) {
+            http_response_code(500);
+            echo json_encode(["success" => false, "message" => "Failed to update comment: " . $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Delete a comment (and its nested replies) if the user owns the recipe, authored the comment, or is an admin.
+     */
+    public function deleteRecipeComment() {
+        $currentUser = $this->requireAuth();
+        $userId = (int)$currentUser['id'];
+        $isAdmin = !empty($_SESSION['is_admin']);
+
+        $data = json_decode(file_get_contents("php://input"), true);
+        $commentId = (int)($_GET['id'] ?? $data['comment_id'] ?? $data['id'] ?? 0);
+
+        if ($commentId <= 0) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Missing comment ID."]);
+            return;
+        }
+
+        $db = Database::connect();
+
+        try {
+            $stmt = $db->prepare("
+                SELECT c.id, c.recipe_id, c.user_id AS comment_user_id, c.image_url, r.user_id AS recipe_owner_id
+                FROM recipe_comments c
+                JOIN recipes r ON r.id = c.recipe_id
+                WHERE c.id = ?
+                LIMIT 1
+            ");
+            $stmt->execute([$commentId]);
+            $target = $stmt->fetch(\PDO::FETCH_ASSOC);
+
+            if (!$target) {
+                http_response_code(404);
+                echo json_encode(["success" => false, "message" => "Comment not found."]);
+                return;
+            }
+
+            $isRecipeOwner = (int)$target['recipe_owner_id'] === $userId;
+            $isCommentAuthor = !empty($target['comment_user_id']) && (int)$target['comment_user_id'] === $userId;
+
+            if (!$isRecipeOwner && !$isCommentAuthor && !$isAdmin) {
+                http_response_code(403);
+                echo json_encode(["success" => false, "message" => "You can only delete your own comments or comments on your recipes."]);
+                return;
+            }
+
+            // Collect target comment and all nested descendant replies
+            $allIds = [$commentId];
+            $imageUrls = [];
+            if (!empty($target['image_url'])) {
+                $imageUrls[] = $target['image_url'];
+            }
+
+            $frontier = [$commentId];
+            while (!empty($frontier)) {
+                $placeholders = implode(',', array_fill(0, count($frontier), '?'));
+                $childStmt = $db->prepare("SELECT id, image_url FROM recipe_comments WHERE parent_id IN ($placeholders)");
+                $childStmt->execute($frontier);
+                $children = $childStmt->fetchAll(\PDO::FETCH_ASSOC);
+                $frontier = [];
+                foreach ($children as $child) {
+                    $cid = (int)$child['id'];
+                    if (!in_array($cid, $allIds, true)) {
+                        $allIds[] = $cid;
+                        $frontier[] = $cid;
+                        if (!empty($child['image_url'])) {
+                            $imageUrls[] = $child['image_url'];
+                        }
+                    }
+                }
+            }
+
+            $db->beginTransaction();
+            $idPlaceholders = implode(',', array_fill(0, count($allIds), '?'));
+
+            try {
+                $notifDelStmt = $db->prepare("DELETE FROM notifications WHERE comment_id IN ($idPlaceholders)");
+                $notifDelStmt->execute($allIds);
+            } catch (\Exception $notifErr) {
+                // Ignore if notifications table/column is unavailable
+            }
+
+            $delStmt = $db->prepare("DELETE FROM recipe_comments WHERE id IN ($idPlaceholders)");
+            $delStmt->execute($allIds);
+            $db->commit();
+
+            // Clean up any local comment image attachments
+            $publicRoot = realpath(__DIR__ . '/../../public');
+            foreach ($imageUrls as $imgUrl) {
+                if (is_string($imgUrl) && strpos($imgUrl, '/images/comments/') === 0 && $publicRoot) {
+                    $filePath = $publicRoot . str_replace('/', DIRECTORY_SEPARATOR, $imgUrl);
+                    if (is_file($filePath)) {
+                        @unlink($filePath);
+                    }
+                }
+            }
+
+            echo json_encode([
+                "success" => true,
+                "message" => "Comment deleted.",
+                "deleted_ids" => $allIds,
+            ]);
+        } catch (\Exception $e) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            http_response_code(500);
+            echo json_encode(["success" => false, "message" => "Failed to delete comment: " . $e->getMessage()]);
+        }
+    }
+
+    /**
      * Handle likes and dislikes on comments (Authenticated users only).
      */
     public function voteOnComment() {

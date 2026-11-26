@@ -38,6 +38,8 @@ $router->add('POST', '/recipes/rate', 'RecipeController', 'rateRecipe');
 // COMMENTS & ENGAGEMENT
 $router->add('GET', '/recipes/comments', 'RecipeController', 'getRecipeComments');
 $router->add('POST', '/recipes/comments', 'RecipeController', 'addRecipeComment');
+$router->add('PUT', '/recipes/comments', 'RecipeController', 'updateRecipeComment');
+$router->add('DELETE', '/recipes/comments', 'RecipeController', 'deleteRecipeComment');
 $router->add('POST', '/recipes/comments/vote', 'RecipeController', 'voteOnComment');
 
 // FAVORITES & USER RECIPES
