@@ -13,7 +13,7 @@ class AuthController {
         $host = strtolower((string)($_SERVER['HTTP_HOST'] ?? ''));
         $isApiLocal = $host === '' || str_contains($host, 'localhost') || str_contains($host, '127.0.0.1');
 
-        // 1. Prefer a non-localhost browser origin (e.g. https://veggievault.chrisandemmashow.com)
+        // 1. Prefer a non-localhost browser origin (e.g. https://theveggievault.com)
         if ($origin && preg_match('#^https?://#i', $origin)) {
             $isOriginLocal = str_contains($origin, 'localhost') || str_contains($origin, '127.0.0.1');
             if (!$isOriginLocal || $isApiLocal) {
@@ -32,7 +32,7 @@ class AuthController {
         }
 
         // 3. Safe production fallback
-        return $isApiLocal ? 'http://localhost:5173' : 'https://veggievault.chrisandemmashow.com';
+        return $isApiLocal ? 'http://localhost:5173' : 'https://theveggievault.com';
     }
 
     private function sendVerificationEmail(string $email, string $username, string $token): array {
@@ -60,8 +60,8 @@ class AuthController {
 
         $headers  = "MIME-Version: 1.0\r\n";
         $headers .= "Content-type: text/html; charset=UTF-8\r\n";
-        $headers .= "From: The Veggie Vault <noreply@vault.chrisandemmashow.com>\r\n";
-        $headers .= "Reply-To: noreply@vault.chrisandemmashow.com\r\n";
+        $headers .= "From: The Veggie Vault <chris@theveggievault.com>\r\n";
+        $headers .= "Reply-To: chris@theveggievault.com\r\n";
         $headers .= "X-Mailer: PHP/" . phpversion();
 
         $mailSent = @mail($email, $subject, $message, $headers);
@@ -479,7 +479,7 @@ class AuthController {
             $updateStmt->execute([':token' => $token, ':expires' => $expires, ':id' => $user['id']]);
 
             // Construct the exact reset link for your frontend route
-            $resetLink = "https://vault.chrisandemmashow.com/reset-password?token=" . $token;
+            $resetLink = $this->resolveFrontendBaseUrl() . "/reset-password?token=" . urlencode($token);
 
             // Prepare the email
             $to = $email;
@@ -507,8 +507,8 @@ class AuthController {
             $headers  = "MIME-Version: 1.0\r\n";
             $headers .= "Content-type: text/html; charset=UTF-8\r\n";
             // Ensure this domain matches the server sending the email
-            $headers .= "From: Veggie Vault <noreply@vault.chrisandemmashow.com>\r\n";
-            $headers .= "Reply-To: noreply@vault.chrisandemmashow.com\r\n";
+            $headers .= "From: The Veggie Vault <chris@theveggievault.com>\r\n";
+            $headers .= "Reply-To: chris@theveggievault.com\r\n";
             $headers .= "X-Mailer: PHP/" . phpversion();
 
             // Fire the email

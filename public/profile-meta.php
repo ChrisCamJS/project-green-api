@@ -19,14 +19,14 @@ $isHttps = (
     (($_SERVER['SERVER_PORT'] ?? '') === '443')
 );
 $scheme = $isHttps ? 'https' : 'http';
-$rawHost = $_SERVER['HTTP_HOST'] ?? 'veggievault.chrisandemmashow.com';
-$host = preg_replace('/[^a-zA-Z0-9.\-:]/', '', $rawHost) ?: 'veggievault.chrisandemmashow.com';
+$rawHost = $_SERVER['HTTP_HOST'] ?? 'theveggievault.com';
+$host = preg_replace('/[^a-zA-Z0-9.\-:]/', '', $rawHost) ?: 'theveggievault.com';
 $siteBaseUrl = "{$scheme}://{$host}";
 
 $isLocalHost = str_contains($host, 'localhost') || str_starts_with($host, '127.0.0.1');
 $apiBaseUrl = $isLocalHost
     ? "{$scheme}://{$host}/pantry-rebuild-api/public"
-    : 'https://veggievault.chrisandemmashow.com/pantry-rebuild-api/public';
+    : 'https://theveggievault.com/pantry-rebuild-api/public';
 
 /**
  * Queries co-located MySQL database directly when the API .env + Database.php sit alongside the frontend.

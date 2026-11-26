@@ -10,7 +10,7 @@ if (!headers_sent()) {
     header('Content-Type: application/xml; charset=UTF-8');
 }
 
-$baseUrl = 'https://veggievault.chrisandemmashow.com';
+$baseUrl = 'https://theveggievault.com';
 $today = date('Y-m-d');
 
 $formatLastMod = static function (?string $rawDate) use ($today): string {

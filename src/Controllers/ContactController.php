@@ -100,7 +100,7 @@ class ContactController {
         $escapedReason = nl2br(htmlspecialchars($reason, ENT_QUOTES, 'UTF-8'));
         $sentTimestamp = gmdate('Y-m-d H:i:s') . ' UTC';
 
-        $to = 'chris@chrisandemmashow.com';
+        $to = 'chris@theveggievault.com';
         $subject = 'The Veggie Vault Contact Form — ' . $safeName;
         $message = "
         <html>
@@ -123,7 +123,7 @@ class ContactController {
 
         $headers  = "MIME-Version: 1.0\r\n";
         $headers .= "Content-type: text/html; charset=UTF-8\r\n";
-        $headers .= "From: The Veggie Vault <noreply@vault.chrisandemmashow.com>\r\n";
+        $headers .= "From: The Veggie Vault <chris@theveggievault.com>\r\n";
         $headers .= "Reply-To: {$email}\r\n";
         $headers .= "X-Mailer: PHP/" . phpversion();
 
@@ -155,7 +155,7 @@ class ContactController {
             echo json_encode([
                 'success' => true,
                 'devMode' => true,
-                'message' => 'Message received! (Local dev environment has no mail server configured; in production this emails chris@chrisandemmashow.com directly.)',
+                'message' => 'Message received! (Local dev environment has no mail server configured; in production this emails chris@theveggievault.com directly.)',
             ]);
             return;
         }
@@ -163,7 +163,7 @@ class ContactController {
         http_response_code(500);
         echo json_encode([
             'success' => false,
-            'message' => "We couldn't send your message right now. Please try again later or email chris@chrisandemmashow.com directly.",
+            'message' => "We couldn't send your message right now. Please try again later or email chris@theveggievault.com directly.",
         ]);
     }
 }

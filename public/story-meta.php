@@ -19,16 +19,16 @@ if ($slug === '') {
     exit('Invalid Story Slug');
 }
 
-// Detect active host (supports both veggievault.chrisandemmashow.com and vault.chrisandemmashow.com)
+// Detect active host (theveggievault.com primary domain)
 $host = isset($_SERVER['HTTP_HOST']) ? preg_replace('/[^a-zA-Z0-9.\-:]/', '', (string)$_SERVER['HTTP_HOST']) : '';
 if ($host === '' || stripos($host, 'localhost') !== false || stripos($host, '127.0.0.1') !== false) {
-    $siteBaseUrl = 'https://veggievault.chrisandemmashow.com';
+    $siteBaseUrl = 'https://theveggievault.com';
 } else {
     $siteBaseUrl = 'https://' . $host;
 }
 
 $canonicalUrl = $siteBaseUrl . '/stories/' . rawurlencode($slug);
-$apiBaseUrl = 'https://veggievault.chrisandemmashow.com/pantry-rebuild-api/public';
+$apiBaseUrl = 'https://theveggievault.com/pantry-rebuild-api/public';
 
 // 1. Try querying the MySQL database directly when co-located with pantry-rebuild-api
 $story = null;

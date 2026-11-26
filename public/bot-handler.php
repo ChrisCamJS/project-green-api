@@ -41,7 +41,7 @@ if ($profileIdentifier !== '') {
     }
 
     $safeSlug = rawurlencode($profileRow['username'] ?? $profileIdentifier);
-    $profileUrl = 'https://veggievault.chrisandemmashow.com/profile/' . $safeSlug;
+    $profileUrl = 'https://theveggievault.com/profile/' . $safeSlug;
     $displayName = trim((string)($profileRow['display_name'] ?? ''));
     $username = trim((string)($profileRow['username'] ?? $profileIdentifier));
     $ogTitle = ($displayName !== '' ? $displayName . ' (@' . $username . ')' : '@' . $username) . ' — Chef Profile | The Veggie Vault';
@@ -49,7 +49,7 @@ if ($profileIdentifier !== '') {
     if ($ogDesc === '') {
         $ogDesc = 'Explore published whole-food, oil-free, plant-based recipes by @' . $username . ' on The Veggie Vault.';
     }
-    $ogImg = 'https://veggievault.chrisandemmashow.com/pantry-rebuild-api/public/users/profile-og-image?identifier=' . $safeSlug;
+    $ogImg = 'https://theveggievault.com/pantry-rebuild-api/public/users/profile-og-image?identifier=' . $safeSlug;
 
     $esc = static fn(string $v): string => htmlspecialchars($v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     $schema = json_encode([
@@ -97,7 +97,7 @@ if ($recipeId <= 0) {
 }
 
 // Build the canonical human-facing URL for the recipe
-$url = 'https://veggievault.chrisandemmashow.com/recipe/' . $recipeId;
+$url = 'https://theveggievault.com/recipe/' . $recipeId;
 
 /**
  * Normalizes and truncates recipe descriptions for Open Graph / Twitter cards.
@@ -192,7 +192,7 @@ foreach ($dbCandidates as $dbFile) {
 
 // 2. Fallback to the public PHP API endpoint if direct DB lookup did not resolve
 if (!$recipe && function_exists('curl_init')) {
-    $apiUrl = 'https://veggievault.chrisandemmashow.com/pantry-rebuild-api/public/recipes/single?id=' . urlencode((string)$recipeId);
+    $apiUrl = 'https://theveggievault.com/pantry-rebuild-api/public/recipes/single?id=' . urlencode((string)$recipeId);
 
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $apiUrl);
@@ -226,7 +226,7 @@ if (
     strpos($imagePath, 'default-veggie-vault-placeholder') !== false ||
     $imageSource === 'none'
 ) {
-    $image = 'https://veggievault.chrisandemmashow.com/og-vault-preview.jpeg';
+    $image = 'https://theveggievault.com/og-vault-preview.jpeg';
 } elseif (preg_match('#^https?://#i', $imagePath)) {
     $image = $imagePath;
 } else {
@@ -235,7 +235,7 @@ if (
         $normalizedPath = '/images' . $normalizedPath;
     }
     $encodedPath = implode('/', array_map('rawurlencode', explode('/', ltrim($normalizedPath, '/'))));
-    $image = 'https://veggievault.chrisandemmashow.com/pantry-rebuild-api/public/' . $encodedPath;
+    $image = 'https://theveggievault.com/pantry-rebuild-api/public/' . $encodedPath;
 }
 
 // 4. Build Schema.org Recipe JSON-LD when recipe details exist

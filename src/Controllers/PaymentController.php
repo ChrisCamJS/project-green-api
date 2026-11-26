@@ -93,6 +93,8 @@ class PaymentController {
 
         $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
         $allowedOrigins = [
+            'https://theveggievault.com',
+            'https://www.theveggievault.com',
             'https://veggievault.chrisandemmashow.com',
             'https://www.veggievault.chrisandemmashow.com',
             'http://localhost:5173',
@@ -101,7 +103,7 @@ class PaymentController {
             return rtrim($origin, '/');
         }
 
-        return 'https://veggievault.chrisandemmashow.com';
+        return 'https://theveggievault.com';
     }
 
     private function resolveCaBundlePath(): ?string {

@@ -9,6 +9,8 @@ ini_set('display_errors', '0');
 // Define the definitive list of VIP domains allowed to access this API.
 // We only want the headless React frontend talking to this server.
 $allowedOrigins = [
+    'https://theveggievault.com',
+    'https://www.theveggievault.com',
     'https://veggievault.chrisandemmashow.com',
     'https://www.veggievault.chrisandemmashow.com',
     'https://vault.chrisandemmashow.com',
@@ -24,7 +26,7 @@ if (in_array($origin, $allowedOrigins)) {
     header("Access-Control-Allow-Origin: $origin");
 } else {
     // Clean fallback to the primary domain without markdown syntax!
-    header("Access-Control-Allow-Origin: https://veggievault.chrisandemmashow.com");
+    header("Access-Control-Allow-Origin: https://theveggievault.com");
 }
 
 // ==============================================================================
