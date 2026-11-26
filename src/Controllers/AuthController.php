@@ -58,13 +58,7 @@ class AuthController {
         </html>
         ";
 
-        $headers  = "MIME-Version: 1.0\r\n";
-        $headers .= "Content-type: text/html; charset=UTF-8\r\n";
-        $headers .= "From: The Veggie Vault <chris@theveggievault.com>\r\n";
-        $headers .= "Reply-To: chris@theveggievault.com\r\n";
-        $headers .= "X-Mailer: PHP/" . phpversion();
-
-        $mailSent = @mail($email, $subject, $message, $headers);
+        $mailSent = \App\Services\MailService::sendHtml($email, $subject, $message);
 
         return [
             'sent' => (bool)$mailSent,
@@ -514,16 +508,8 @@ class AuthController {
             </html>
             ";
 
-            // Headers to make it look like a proper HTML email and avoid the spam bin
-            $headers  = "MIME-Version: 1.0\r\n";
-            $headers .= "Content-type: text/html; charset=UTF-8\r\n";
-            // Ensure this domain matches the server sending the email
-            $headers .= "From: The Veggie Vault <chris@theveggievault.com>\r\n";
-            $headers .= "Reply-To: chris@theveggievault.com\r\n";
-            $headers .= "X-Mailer: PHP/" . phpversion();
-
-            // Fire the email
-            $mailSent = mail($to, $subject, $message, $headers);
+            // Fire the email via SMTP / MailService
+            $mailSent = \App\Services\MailService::sendHtml($to, $subject, $message);
 
             if ($mailSent) {
                 echo json_encode(["success" => true, "message" => "Reset link dispatched! Tell them to check their inbox (and the spam folder, just in case)."]);

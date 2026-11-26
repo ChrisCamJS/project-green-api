@@ -121,13 +121,7 @@ class ContactController {
         </html>
         ";
 
-        $headers  = "MIME-Version: 1.0\r\n";
-        $headers .= "Content-type: text/html; charset=UTF-8\r\n";
-        $headers .= "From: The Veggie Vault <chris@theveggievault.com>\r\n";
-        $headers .= "Reply-To: {$email}\r\n";
-        $headers .= "X-Mailer: PHP/" . phpversion();
-
-        $mailSent = @mail($to, $subject, $message, $headers);
+        $mailSent = \App\Services\MailService::sendHtml($to, $subject, $message, $email);
 
         $host = strtolower((string)($_SERVER['HTTP_HOST'] ?? ''));
         $isLocal = $host === '' || str_contains($host, 'localhost') || str_contains($host, '127.0.0.1');
