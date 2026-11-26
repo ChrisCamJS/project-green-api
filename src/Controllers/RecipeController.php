@@ -3354,4 +3354,287 @@ public function getUserFavorites() {
             ]);
         }
     }
+
+    /**
+     * GET /recipes/variant-og-image?id=<recipeId>
+     * Renders a 1200x630 JPEG Open Graph preview of a recipe image with the
+     * Masterpiece Variant (or Recipe Variant) badge overlaid in the top-left corner.
+     */
+    public function getVariantOgImage(): void {
+        $recipeId = isset($_GET['id']) && ctype_digit((string)$_GET['id']) ? (int)$_GET['id'] : 0;
+        if ($recipeId <= 0) {
+            http_response_code(400);
+            echo json_encode(["success" => false, "message" => "Invalid recipe ID."]);
+            return;
+        }
+
+        if (!extension_loaded('gd')) {
+            http_response_code(500);
+            echo json_encode(["success" => false, "message" => "GD extension unavailable."]);
+            return;
+        }
+
+        $stmt = $this->db->prepare("
+            SELECT id, image_url, image_source, parent_recipe_id, is_masterpiece
+            FROM recipes
+            WHERE id = ?
+            LIMIT 1
+        ");
+        $stmt->execute([$recipeId]);
+        $recipe = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+
+        if (!$recipe) {
+            http_response_code(404);
+            echo json_encode(["success" => false, "message" => "Recipe not found."]);
+            return;
+        }
+
+        $outW = 1200;
+        $outH = 630;
+        $src = $this->loadOgSourceImage(
+            trim((string)($recipe['image_url'] ?? '')),
+            trim((string)($recipe['image_source'] ?? ''))
+        );
+
+        $canvas = $src ? $this->createOgCoverCanvas($src, $outW, $outH) : null;
+        if (!$canvas) {
+            http_response_code(404);
+            echo json_encode(["success" => false, "message" => "Recipe OG image unavailable."]);
+            return;
+        }
+
+        if (!empty($recipe['parent_recipe_id'])) {
+            $isMasterpiece = !empty($recipe['is_masterpiece']);
+            $this->drawVariantBadgeOnOgCanvas($canvas, $isMasterpiece);
+        }
+
+        ob_start();
+        imagejpeg($canvas, null, 88);
+        $jpegBytes = (string)ob_get_clean();
+
+        if (!headers_sent()) {
+            header_remove('Content-Type');
+            header_remove('X-Frame-Options');
+            header('Access-Control-Allow-Origin: *');
+            header('Content-Type: image/jpeg');
+            header('Content-Length: ' . strlen($jpegBytes));
+            header('Cache-Control: public, max-age=3600');
+        }
+        if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'HEAD') {
+            return;
+        }
+        echo $jpegBytes;
+    }
+
+    /**
+     * Loads a GD image resource from a recipe's image_url or falls back to og-vault-preview.jpg.
+     */
+    private function loadOgSourceImage(string $imagePath, string $imageSource) {
+        $bytes = null;
+        $useFallback = (
+            $imagePath === '' ||
+            $imageSource === 'none' ||
+            strpos($imagePath, 'default-veggie-vault-placeholder') !== false
+        );
+
+        if (!$useFallback) {
+            $pathPart = $imagePath;
+            if (preg_match('#^https?://#i', $imagePath)) {
+                $parsed = parse_url($imagePath);
+                $pathPart = $parsed['path'] ?? '';
+            }
+
+            if ($pathPart !== '' && str_starts_with($pathPart, '/')) {
+                $normalized = preg_replace('#^/pantry-rebuild-api/public/#', '/', $pathPart);
+                if (strpos($normalized, '/images/') !== 0 && strpos($normalized, '/uploads/') !== 0) {
+                    $normalized = '/images' . $normalized;
+                }
+                $roots = array_filter([
+                    realpath(__DIR__ . '/../../public'),
+                    realpath(dirname(__DIR__, 3) . '/project-green/public'),
+                ]);
+                foreach ($roots as $root) {
+                    $candidate = realpath($root . DIRECTORY_SEPARATOR . ltrim(str_replace('/', DIRECTORY_SEPARATOR, $normalized), DIRECTORY_SEPARATOR));
+                    if ($candidate && str_starts_with($candidate, $root) && is_file($candidate) && is_readable($candidate)) {
+                        $raw = @file_get_contents($candidate);
+                        if ($raw !== false) {
+                            $bytes = $raw;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if ($bytes === null && preg_match('#^https?://#i', $imagePath) && function_exists('curl_init')) {
+                $ch = curl_init($imagePath);
+                curl_setopt_array($ch, [
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_FOLLOWLOCATION => true,
+                    CURLOPT_TIMEOUT => 5,
+                    CURLOPT_MAXREDIRS => 3,
+                ]);
+                $resp = curl_exec($ch);
+                $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
+                if ($resp !== false && $code >= 200 && $code < 300) {
+                    $bytes = $resp;
+                }
+            }
+        }
+
+        if ($bytes === null) {
+            $fallbackCandidates = [
+                __DIR__ . '/../../public/og-vault-preview.jpg',
+                dirname(__DIR__, 3) . '/project-green/public/og-vault-preview.jpg',
+            ];
+            if (!empty($_SERVER['DOCUMENT_ROOT'])) {
+                $fallbackCandidates[] = rtrim($_SERVER['DOCUMENT_ROOT'], '/\\') . '/og-vault-preview.jpg';
+            }
+            foreach ($fallbackCandidates as $path) {
+                if (is_file($path) && is_readable($path)) {
+                    $raw = @file_get_contents($path);
+                    if ($raw !== false) {
+                        $bytes = $raw;
+                        break;
+                    }
+                }
+            }
+        }
+
+        return $bytes !== null ? @imagecreatefromstring($bytes) : null;
+    }
+
+    /**
+     * Center-crops and cover-scales a GD image to exact OGP dimensions.
+     */
+    private function createOgCoverCanvas($src, int $targetW, int $targetH) {
+        $srcW = imagesx($src);
+        $srcH = imagesy($src);
+        if ($srcW <= 0 || $srcH <= 0) {
+            return null;
+        }
+        $scale = max($targetW / $srcW, $targetH / $srcH);
+        $cropW = (int)round($targetW / $scale);
+        $cropH = (int)round($targetH / $scale);
+        $cropX = (int)max(0, floor(($srcW - $cropW) / 2));
+        $cropY = (int)max(0, floor(($srcH - $cropH) / 2));
+
+        $canvas = imagecreatetruecolor($targetW, $targetH);
+        imagealphablending($canvas, true);
+        imagecopyresampled($canvas, $src, 0, 0, $cropX, $cropY, $targetW, $targetH, $cropW, $cropH);
+        return $canvas;
+    }
+
+    /**
+     * Overlays the Masterpiece Variant (or Recipe Variant) badge pill in the top-left corner.
+     */
+    private function drawVariantBadgeOnOgCanvas($canvas, bool $isMasterpiece): void {
+        $label = $isMasterpiece ? 'MASTERPIECE VARIANT' : 'RECIPE VARIANT';
+        $fontPath = $this->resolveOgBoldFontPath();
+        $fontSize = 20;
+        $padX = 28;
+        $padY = 16;
+        $iconSpace = 30;
+
+        if ($fontPath) {
+            $bbox = imagettfbbox($fontSize, 0, $fontPath, $label);
+            $textW = $bbox !== false ? ($bbox[2] - $bbox[0]) : strlen($label) * 14;
+            $textH = $bbox !== false ? ($bbox[1] - $bbox[7]) : 22;
+        } else {
+            $textW = imagefontwidth(5) * strlen($label);
+            $textH = imagefontheight(5);
+        }
+
+        $pillW = (int)$textW + $iconSpace + ($padX * 2);
+        $pillH = max(56, (int)$textH + ($padY * 2));
+        $left = 36;
+        $top = 36;
+        $right = $left + $pillW;
+        $bottom = $top + $pillH;
+        $radius = (int)floor($pillH / 2);
+
+        // Soft drop shadow for legibility over bright or dark dish photos
+        $shadow = imagecolorallocatealpha($canvas, 0, 0, 0, 62);
+        $this->drawOgCapsule($canvas, $left + 3, $top + 6, $right + 3, $bottom + 6, $radius, $shadow);
+
+        // Border and fill matching VariantBadge.css
+        if ($isMasterpiece) {
+            $borderColor = imagecolorallocate($canvas, 253, 230, 138); // #fde68a
+            $fillColor = imagecolorallocate($canvas, 217, 119, 6);     // #d97706
+            $textColor = imagecolorallocate($canvas, 255, 251, 235);   // #fffbeb
+        } else {
+            $borderColor = imagecolorallocate($canvas, 221, 214, 254); // #ddd6fe
+            $fillColor = imagecolorallocate($canvas, 109, 40, 217);    // #6d28d9
+            $textColor = imagecolorallocate($canvas, 255, 255, 255);   // #ffffff
+        }
+
+        $this->drawOgCapsule($canvas, $left - 3, $top - 3, $right + 3, $bottom + 3, $radius + 3, $borderColor);
+        $this->drawOgCapsule($canvas, $left, $top, $right, $bottom, $radius, $fillColor);
+
+        // Draw crisp 4-point sparkle icon inside the left side of the pill
+        $sx = $left + $padX + 10;
+        $sy = (int)round(($top + $bottom) / 2);
+        $sparklePts = [
+            $sx, $sy - 11,
+            $sx + 3, $sy - 3,
+            $sx + 11, $sy,
+            $sx + 3, $sy + 3,
+            $sx, $sy + 11,
+            $sx - 3, $sy + 3,
+            $sx - 11, $sy,
+            $sx - 3, $sy - 3,
+        ];
+        imagefilledpolygon($canvas, $sparklePts, $textColor);
+
+        $textStartX = $left + $padX + $iconSpace;
+        if ($fontPath && isset($bbox) && $bbox !== false) {
+            $tx = $textStartX - $bbox[0];
+            $ty = (int)round(($top + $bottom) / 2 - ($textH / 2) - $bbox[7]);
+            imagettftext($canvas, $fontSize, 0, $tx, $ty, $textColor, $fontPath, $label);
+        } else {
+            $ty = (int)round(($top + $bottom) / 2 - ($textH / 2));
+            imagestring($canvas, 5, $textStartX, $ty, $label, $textColor);
+        }
+    }
+
+    private function drawOgCapsule($canvas, int $left, int $top, int $right, int $bottom, int $radius, int $color): void {
+        $w = max(1, ($right - $left) + 1);
+        $h = max(1, ($bottom - $top) + 1);
+        $r = max(1, min($radius, (int)floor(min($w, $h) / 2)));
+        $d = $r * 2;
+
+        $rgba = imagecolorsforindex($canvas, $color);
+        $tmp = imagecreatetruecolor($w, $h);
+        imagealphablending($tmp, false);
+        imagesavealpha($tmp, true);
+        $clear = imagecolorallocatealpha($tmp, 0, 0, 0, 127);
+        imagefilledrectangle($tmp, 0, 0, $w - 1, $h - 1, $clear);
+
+        $localCol = imagecolorallocatealpha($tmp, $rgba['red'], $rgba['green'], $rgba['blue'], $rgba['alpha']);
+        imagefilledellipse($tmp, $r, $r, $d, $d, $localCol);
+        imagefilledellipse($tmp, $w - 1 - $r, $r, $d, $d, $localCol);
+        if (($w - 1) - $d > 0) {
+            imagefilledrectangle($tmp, $r, 0, $w - 1 - $r, $h - 1, $localCol);
+        }
+
+        imagecopy($canvas, $tmp, $left, $top, 0, 0, $w, $h);
+    }
+
+    private function resolveOgBoldFontPath(): ?string {
+        $candidates = [
+            'C:/Windows/Fonts/segoeuib.ttf',
+            'C:/Windows/Fonts/arialbd.ttf',
+            'C:/Windows/Fonts/calibrib.ttf',
+            '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+            '/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf',
+            '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+            '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
+        ];
+        foreach ($candidates as $fontPath) {
+            if (is_file($fontPath) && is_readable($fontPath)) {
+                return $fontPath;
+            }
+        }
+        return null;
+    }
 }

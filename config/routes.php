@@ -9,6 +9,7 @@ $router = new Router();
 $router->add('GET', '/recipes', 'RecipeController', 'getAllRecipes');
 $router->add('POST', '/recipes', 'RecipeController', 'createRecipe'); 
 $router->add('GET', '/recipes/single', 'RecipeController', 'getRecipeById');
+$router->add('GET', '/recipes/variant-og-image', 'RecipeController', 'getVariantOgImage');
 $router->add('GET', '/recipes/lineage', 'RecipeController', 'getRecipeLineage');
 
 // AUTHENTICATION & USERS
@@ -117,6 +118,7 @@ $router->add('GET', '/achievements', 'AchievementController', 'getMyAchievements
 $router->add('GET', '/admin/stories', 'StoryController', 'getAdminStories');
 $router->add('GET', '/stories', 'StoryController', 'getStories');
 $router->add('GET', '/stories/single', 'StoryController', 'getStoryBySlug');
+$router->add('GET', '/stories/og-image', 'StoryController', 'getStoryOgImage');
 $router->add('POST', '/stories', 'StoryController', 'createStory');
 $router->add('PUT', '/stories', 'StoryController', 'updateStory');
 $router->add('DELETE', '/stories', 'StoryController', 'deleteStory');

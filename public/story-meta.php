@@ -119,7 +119,7 @@ $storyExcerpt = !empty($story['excerpt'])
 $rawCover = trim((string)($story['cover_image'] ?? $story['coverImage'] ?? ''));
 $rawRecipeImg = trim((string)($story['recipe_image_url'] ?? $story['recipeImageUrl'] ?? ($story['recipe']['imageUrl'] ?? '')));
 $selectedImage = $rawCover !== '' ? $rawCover : $rawRecipeImg;
-$ogImage = $resolveAbsoluteImage($selectedImage);
+$ogImage = $apiBaseUrl . '/stories/og-image?slug=' . rawurlencode($slug);
 
 $authorDisplay = trim((string)($story['author_display_name'] ?? $story['authorDisplayName'] ?? ''));
 $authorUsername = trim((string)($story['author_name'] ?? $story['authorName'] ?? 'Vault Chef'));

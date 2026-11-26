@@ -161,6 +161,7 @@ foreach ($dbCandidates as $dbFile) {
                 'SELECT r.id, r.title, r.description, r.image_url, r.image_source, r.yields,
                         r.prep_time_mins, r.cook_time_mins, r.is_oil_free, r.is_gluten_free,
                         r.is_sugar_free, r.average_rating, r.rating_count, r.created_at,
+                        r.parent_recipe_id, r.is_masterpiece,
                         u.username AS author_name
                  FROM recipes r
                  LEFT JOIN users u ON u.id = r.user_id
@@ -236,6 +237,10 @@ if (
     }
     $encodedPath = implode('/', array_map('rawurlencode', explode('/', ltrim($normalizedPath, '/'))));
     $image = 'https://theveggievault.com/pantry-rebuild-api/public/' . $encodedPath;
+}
+
+if (!empty($recipe['parent_recipe_id']) || !empty($recipe['parentRecipeId'])) {
+    $image = 'https://theveggievault.com/pantry-rebuild-api/public/recipes/variant-og-image?id=' . $recipeId;
 }
 
 // 4. Build Schema.org Recipe JSON-LD when recipe details exist

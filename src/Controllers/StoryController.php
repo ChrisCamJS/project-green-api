@@ -3,6 +3,7 @@
 namespace App\Controllers;
 
 use App\Database;
+use App\Services\OgImageService;
 use App\Services\ProfanityFilterService;
 use App\Services\StoryService;
 use PDO;
@@ -897,6 +898,208 @@ class StoryController {
             ]);
         } catch (\Throwable $e) {
             error_log('Failed to insert recipe_story notification: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * GET /stories/og-image?slug=<slug>
+     * Renders a 1200x630 JPEG Open Graph preview using the story's selected cover/recipe image,
+     * overlaid with a "VEGGIE VAULT STORIES" badge and the story creator's circular avatar + handle.
+     */
+    public function getStoryOgImage(): void {
+        $rawSlug = trim((string)($_GET['slug'] ?? ''));
+        $slug = preg_replace('/[^a-zA-Z0-9_-]/', '', $rawSlug);
+        if ($slug === '') {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'Invalid story slug.']);
+            return;
+        }
+
+        if (!extension_loaded('gd')) {
+            http_response_code(500);
+            echo json_encode(['success' => false, 'message' => 'GD extension unavailable.']);
+            return;
+        }
+
+        $stmt = $this->db->prepare("
+            SELECT s.id, s.cover_image,
+                   u.username AS author_name,
+                   u.display_name AS author_display_name,
+                   u.profile_image AS author_avatar,
+                   r.image_url AS recipe_image_url,
+                   r.image_source AS recipe_image_source
+            FROM recipe_stories s
+            LEFT JOIN users u ON u.id = s.user_id
+            LEFT JOIN recipes r ON r.id = s.recipe_id
+            WHERE s.slug = ? AND s.status = 'published'
+            LIMIT 1
+        ");
+        $stmt->execute([$slug]);
+        $story = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+
+        if (!$story) {
+            http_response_code(404);
+            echo json_encode(['success' => false, 'message' => 'Story not found.']);
+            return;
+        }
+
+        $rawCover = trim((string)($story['cover_image'] ?? ''));
+        $rawRecipeImg = trim((string)($story['recipe_image_url'] ?? ''));
+        $recipeSource = trim((string)($story['recipe_image_source'] ?? ''));
+        $selectedImg = $rawCover !== ''
+            ? $rawCover
+            : ($recipeSource !== 'none' ? $rawRecipeImg : '');
+
+        $fallbackPath = OgImageService::resolveBaseOgImagePath();
+        $src = OgImageService::loadImageResource($selectedImg, $fallbackPath);
+        $canvas = $src ? OgImageService::createCoverCanvas($src, 1200, 630) : null;
+        if (!$canvas) {
+            http_response_code(404);
+            echo json_encode(['success' => false, 'message' => 'Story OG image unavailable.']);
+            return;
+        }
+
+        $this->drawStoriesBadgeOnOgCanvas($canvas);
+        $this->drawStoryCreatorOverlayOnOgCanvas($canvas, $story);
+
+        OgImageService::outputJpeg($canvas, 88);
+    }
+
+    /**
+     * Draws the "VEGGIE VAULT STORIES" badge in the top-left corner of the story OG image.
+     */
+    private function drawStoriesBadgeOnOgCanvas($canvas): void {
+        $label = 'VEGGIE VAULT STORIES';
+        $fontPath = OgImageService::resolveBoldFontPath();
+        $fontSize = 19;
+        $padX = 26;
+        $padY = 15;
+        $iconSpace = 30;
+
+        if ($fontPath) {
+            $bbox = imagettfbbox($fontSize, 0, $fontPath, $label);
+            $textW = $bbox !== false ? ($bbox[2] - $bbox[0]) : strlen($label) * 14;
+            $textH = $bbox !== false ? ($bbox[1] - $bbox[7]) : 22;
+        } else {
+            $textW = imagefontwidth(5) * strlen($label);
+            $textH = imagefontheight(5);
+        }
+
+        $pillW = (int)$textW + $iconSpace + ($padX * 2);
+        $pillH = max(52, (int)$textH + ($padY * 2));
+        $left = 36;
+        $top = 36;
+        $right = $left + $pillW;
+        $bottom = $top + $pillH;
+        $radius = (int)floor($pillH / 2);
+
+        $shadow = imagecolorallocatealpha($canvas, 0, 0, 0, 62);
+        OgImageService::drawCapsule($canvas, $left + 3, $top + 6, $right + 3, $bottom + 6, $radius, $shadow);
+
+        $borderColor = imagecolorallocate($canvas, 134, 239, 172); // #86efac
+        $fillColor = imagecolorallocate($canvas, 20, 83, 45);      // #14532d
+        $textColor = imagecolorallocate($canvas, 240, 253, 244);   // #f0fdf4
+
+        OgImageService::drawCapsule($canvas, $left - 3, $top - 3, $right + 3, $bottom + 3, $radius + 3, $borderColor);
+        OgImageService::drawCapsule($canvas, $left, $top, $right, $bottom, $radius, $fillColor);
+
+        // Simple open-book icon on the left of the badge
+        $bx = $left + $padX + 2;
+        $by = (int)round(($top + $bottom) / 2);
+        $leftPage = [$bx, $by - 8, $bx + 9, $by - 6, $bx + 9, $by + 9, $bx, $by + 7];
+        $rightPage = [$bx + 11, $by - 6, $bx + 20, $by - 8, $bx + 20, $by + 7, $bx + 11, $by + 9];
+        imagefilledpolygon($canvas, $leftPage, $textColor);
+        imagefilledpolygon($canvas, $rightPage, $textColor);
+
+        $textStartX = $left + $padX + $iconSpace;
+        if ($fontPath && isset($bbox) && $bbox !== false) {
+            $tx = $textStartX - $bbox[0];
+            $ty = (int)round(($top + $bottom) / 2 - ($textH / 2) - $bbox[7]);
+            imagettftext($canvas, $fontSize, 0, $tx, $ty, $textColor, $fontPath, $label);
+        } else {
+            $ty = (int)round(($top + $bottom) / 2 - ($textH / 2));
+            imagestring($canvas, 5, $textStartX, $ty, $label, $textColor);
+        }
+    }
+
+    /**
+     * Draws a compact bottom-left creator overlay (circular avatar + handle pill).
+     */
+    private function drawStoryCreatorOverlayOnOgCanvas($canvas, array $story): void {
+        $avatarDiameter = 84;
+        $avatarRadius = (int)($avatarDiameter / 2);
+        $whiteRingR = $avatarRadius + 3;
+        $greenRingR = $whiteRingR + 3;
+        $cx = 36 + $greenRingR;
+        $cy = 630 - 36 - $greenRingR;
+
+        for ($i = 4; $i >= 1; $i--) {
+            $alpha = 127 - (int)round((5 - $i) * 9);
+            $shadowCol = imagecolorallocatealpha($canvas, 8, 22, 16, max(72, min(124, $alpha)));
+            $r = $greenRingR + ($i * 2);
+            imagefilledellipse($canvas, $cx + 3, $cy + 5, $r * 2, $r * 2, $shadowCol);
+        }
+
+        imagefilledellipse($canvas, $cx, $cy, $greenRingR * 2, $greenRingR * 2, imagecolorallocate($canvas, 134, 239, 172));
+        imagefilledellipse($canvas, $cx, $cy, $whiteRingR * 2, $whiteRingR * 2, imagecolorallocate($canvas, 255, 255, 255));
+
+        $avatarSrc = OgImageService::loadImageResource($story['author_avatar'] ?? null);
+        if (!$avatarSrc) {
+            $labelSource = trim((string)($story['author_display_name'] ?: $story['author_name'] ?: 'V'));
+            $initial = strtoupper(substr($labelSource, 0, 1));
+            $avatarSrc = OgImageService::createInitialAvatar($initial !== '' ? $initial : 'V', 256);
+        }
+
+        if ($avatarSrc) {
+            $circular = OgImageService::createCircularAvatar($avatarSrc, $avatarDiameter);
+            if ($circular) {
+                imagecopy($canvas, $circular, $cx - $avatarRadius, $cy - $avatarRadius, 0, 0, $avatarDiameter, $avatarDiameter);
+            }
+        }
+
+        $username = trim((string)($story['author_name'] ?? ''));
+        if ($username !== '') {
+            $handleText = '@' . $username;
+            if (strlen($handleText) > 24) {
+                $handleText = substr($handleText, 0, 23) . '...';
+            }
+
+            $fontPath = OgImageService::resolveBoldFontPath();
+            $fontSize = 17;
+            $padX = 20;
+            $padY = 11;
+            if ($fontPath) {
+                $bbox = imagettfbbox($fontSize, 0, $fontPath, $handleText);
+                $textW = $bbox !== false ? ($bbox[2] - $bbox[0]) : strlen($handleText) * 11;
+                $textH = $bbox !== false ? ($bbox[1] - $bbox[7]) : 18;
+            } else {
+                $textW = imagefontwidth(5) * strlen($handleText);
+                $textH = imagefontheight(5);
+            }
+
+            $pillH = max(40, (int)$textH + ($padY * 2));
+            $pillW = max(110, (int)$textW + ($padX * 2));
+            $pillLeft = $cx + $greenRingR + 14;
+            $pillRight = $pillLeft + $pillW;
+            $pillTop = $cy - (int)round($pillH / 2);
+            $pillBottom = $pillTop + $pillH;
+            $radius = (int)floor($pillH / 2);
+
+            $pillShadow = imagecolorallocatealpha($canvas, 0, 0, 0, 72);
+            OgImageService::drawCapsule($canvas, $pillLeft + 2, $pillTop + 4, $pillRight + 2, $pillBottom + 4, $radius, $pillShadow);
+            OgImageService::drawCapsule($canvas, $pillLeft - 2, $pillTop - 2, $pillRight + 2, $pillBottom + 2, $radius + 2, imagecolorallocate($canvas, 134, 239, 172));
+            OgImageService::drawCapsule($canvas, $pillLeft, $pillTop, $pillRight, $pillBottom, $radius, imagecolorallocatealpha($canvas, 17, 56, 40, 12));
+
+            $white = imagecolorallocate($canvas, 255, 255, 255);
+            if ($fontPath && isset($bbox) && $bbox !== false) {
+                $tx = $pillLeft + $padX - $bbox[0];
+                $ty = (int)round($cy - ($textH / 2) - $bbox[7]);
+                imagettftext($canvas, $fontSize, 0, $tx, $ty, $white, $fontPath, $handleText);
+            } else {
+                $tx = $pillLeft + $padX;
+                $ty = (int)round($cy - ($textH / 2));
+                imagestring($canvas, 5, $tx, $ty, $handleText, $white);
+            }
         }
     }
 }
