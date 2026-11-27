@@ -6,6 +6,7 @@
  * to social media crawlers, while redirecting direct bot-handler.php visits to the SPA.
  */
 
+ini_set('display_errors', '0');
 if (!headers_sent()) {
     header('Content-Type: text/html; charset=UTF-8');
 }
@@ -156,7 +157,14 @@ foreach ($dbCandidates as $dbFile) {
     if (is_file($dbFile) && is_file($envFile)) {
         try {
             require_once $dbFile;
+            $ogServiceFile = dirname($dbFile, 2) . '/src/Services/OgImageService.php';
+            if (is_file($ogServiceFile)) {
+                require_once $ogServiceFile;
+            }
             $db = \App\Database::connect();
+            if (class_exists('\App\Services\OgImageService')) {
+                \App\Services\OgImageService::warmAllOgImages($db);
+            }
             $stmt = $db->prepare(
                 'SELECT r.id, r.title, r.description, r.image_url, r.image_source, r.yields,
                         r.prep_time_mins, r.cook_time_mins, r.is_oil_free, r.is_gluten_free,
@@ -239,8 +247,17 @@ if (
     $image = 'https://theveggievault.com/pantry-rebuild-api/public/' . $encodedPath;
 }
 
-if (!empty($recipe['parent_recipe_id']) || !empty($recipe['parentRecipeId'])) {
+$isVariantRecipe = !empty($recipe['parent_recipe_id']) || !empty($recipe['parentRecipeId']);
+
+if ($isVariantRecipe) {
     $image = 'https://theveggievault.com/pantry-rebuild-api/public/recipes/variant-og-image?id=' . $recipeId;
+}
+
+if (!empty($recipe) && class_exists('\App\Services\OgImageService')) {
+    $staticOgUrl = \App\Services\OgImageService::ensureCachedRecipeOgUrl($recipe);
+    if ($staticOgUrl !== null) {
+        $image = $staticOgUrl;
+    }
 }
 
 // 4. Build Schema.org Recipe JSON-LD when recipe details exist

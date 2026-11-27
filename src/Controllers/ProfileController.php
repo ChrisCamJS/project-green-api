@@ -178,6 +178,7 @@ class ProfileController {
 
         RecipeVariantService::ensureSchema($this->db);
         StoryService::ensureSchema($this->db);
+        \App\Services\OgImageService::warmAllOgImages($this->db);
 
         $recipesSql = "SELECT r.id, r.user_id, r.parent_recipe_id, r.root_recipe_id, r.is_masterpiece, r.variant_summary,
                               r.title, r.description, r.image_url, r.yields,
@@ -882,6 +883,7 @@ class ProfileController {
             $this->compositeAchievementCardOnOgCanvas($canvas, $cardData);
         }
 
+        imageinterlace($canvas, false);
         ob_start();
         imagejpeg($canvas, null, 88);
         $jpegBytes = (string)ob_get_clean();

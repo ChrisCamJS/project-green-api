@@ -196,6 +196,7 @@ public function getAllRecipes() {
             }, $recipes);
 
             echo json_encode($formatted);
+            \App\Services\OgImageService::warmAllOgImages($this->db);
             
         } catch (\Exception $e) {
             http_response_code(500);

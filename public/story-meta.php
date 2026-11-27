@@ -7,6 +7,7 @@
  * request a story URL.
  */
 
+ini_set('display_errors', '0');
 if (!headers_sent()) {
     header('Content-Type: text/html; charset=UTF-8');
 }
@@ -44,13 +45,21 @@ foreach ($dbCandidates as $dbFile) {
     if (is_file($dbFile) && is_file($envFile)) {
         try {
             require_once $dbFile;
+            $ogServiceFile = dirname($dbFile, 2) . '/src/Services/OgImageService.php';
+            if (is_file($ogServiceFile)) {
+                require_once $ogServiceFile;
+            }
             $db = \App\Database::connect();
+            if (class_exists('\App\Services\OgImageService')) {
+                \App\Services\OgImageService::warmAllOgImages($db, $apiBaseUrl);
+            }
             $stmt = $db->prepare("
                 SELECT s.id, s.recipe_id, s.user_id, s.title, s.slug, s.excerpt,
                        s.cover_image, s.content_html, s.read_time_minutes, s.status,
                        s.created_at, s.updated_at,
                        u.username AS author_name,
                        u.display_name AS author_display_name,
+                       u.profile_image AS author_avatar,
                        r.title AS recipe_title,
                        r.image_url AS recipe_image_url,
                        r.image_source AS recipe_image_source
@@ -119,7 +128,10 @@ $storyExcerpt = !empty($story['excerpt'])
 $rawCover = trim((string)($story['cover_image'] ?? $story['coverImage'] ?? ''));
 $rawRecipeImg = trim((string)($story['recipe_image_url'] ?? $story['recipeImageUrl'] ?? ($story['recipe']['imageUrl'] ?? '')));
 $selectedImage = $rawCover !== '' ? $rawCover : $rawRecipeImg;
-$ogImage = $apiBaseUrl . '/stories/og-image?slug=' . rawurlencode($slug);
+$ogVersion = !empty($story['updated_at']) && strtotime((string)$story['updated_at']) !== false
+    ? (int)strtotime((string)$story['updated_at'])
+    : 2;
+$ogImage = $apiBaseUrl . '/stories/og-image?slug=' . rawurlencode($slug) . '&v=' . $ogVersion;
 
 $authorDisplay = trim((string)($story['author_display_name'] ?? $story['authorDisplayName'] ?? ''));
 $authorUsername = trim((string)($story['author_name'] ?? $story['authorName'] ?? 'Vault Chef'));
@@ -205,6 +217,7 @@ $escapedModifiedIso = $esc($modifiedIso);
     <meta property="og:url" content="<?= $escapedUrl ?>" />
     <meta property="og:image" content="<?= $escapedImage ?>" />
     <meta property="og:image:secure_url" content="<?= $escapedImage ?>" />
+    <meta property="og:image:type" content="image/jpeg" />
     <meta property="og:image:alt" content="<?= $escapedTitle ?>" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />

@@ -7,8 +7,16 @@
  * circular avatar on top of og-vault-preview.jpg (1200x630).
  */
 
+ini_set('display_errors', '0');
+
 $mode = ($_GET['mode'] ?? 'profile') === 'achievements' ? 'achievements' : 'profile';
-$rawIdentifier = trim((string)($_GET['identifier'] ?? ''));
+$rawIdentifier = rawurldecode(trim((string)($_GET['identifier'] ?? '')));
+if ($rawIdentifier === '' && !empty($_SERVER['REQUEST_URI'])) {
+    $reqPath = (string)parse_url((string)$_SERVER['REQUEST_URI'], PHP_URL_PATH);
+    if (preg_match('#/(?:profile|achievements/shared)/([^/?#]+)#', $reqPath, $m)) {
+        $rawIdentifier = rawurldecode(trim($m[1]));
+    }
+}
 $identifier = ltrim($rawIdentifier, '@');
 $badgeKey = trim((string)($_GET['badge_key'] ?? ''));
 $badgeLevel = isset($_GET['level']) && ctype_digit((string)$_GET['level']) ? (int)$_GET['level'] : 0;
@@ -57,7 +65,14 @@ function fetchProfileFromLocalDb(string $identifier): ?array {
 
     try {
         require_once $apiRoot . '/src/Database.php';
+        $ogServiceFile = $apiRoot . '/src/Services/OgImageService.php';
+        if (is_file($ogServiceFile)) {
+            require_once $ogServiceFile;
+        }
         $pdo = \App\Database::connect();
+        if (class_exists('\App\Services\OgImageService')) {
+            \App\Services\OgImageService::warmAllOgImages($pdo);
+        }
         if (ctype_digit($identifier)) {
             $stmt = $pdo->prepare(
                 "SELECT id, username, display_name, bio, profile_image,
